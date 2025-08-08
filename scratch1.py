@@ -1,49 +1,41 @@
 #
-# This script manually reads and parses an IGC file, plotting the flight path
-# and marking potential thermals, circling areas, and significant climbs.
-# It does not require a third-party IGC parsing library.
+# This script analyzes multiple IGC files from a specified folder to
+# determine the probability distributions of thermal distance and strength.
+# It also calculates the lambda parameter for the thermal strength distribution.
 #
-# Required library: matplotlib
-# Install with: pip install matplotlib
+# Required libraries: matplotlib, numpy
+# Install with: pip install matplotlib numpy
 #
 
 import matplotlib.pyplot as plt
+import numpy as np
 import os
 import math
 
 # --- User-configurable variables ---
-# Threshold for a simple altitude gain (red 'x' markers)
-altitude_change_threshold = 20  # meters
-
-# Heuristic parameters for identifying circling/stationary flight (green 'o' markers)
-# This heuristic assumes that a thermal is being worked if the pilot gains
-# altitude while staying within a confined area, defined by the variables below.
+# Heuristic parameters for identifying a thermal (a sustained circling period).
 time_window = 10  # seconds to check for sustained climb and confined area
 distance_threshold = 100  # meters, max distance traveled in the time window
+altitude_change_threshold = 20  # meters
 
-# Threshold for identifying a significant, continuous climb (yellow '^' markers)
+# Threshold for identifying a significant, continuous climb for the plot.
 significant_climb_threshold = 200  # meters
 
 
 def igc_to_decimal_degrees(igc_coord):
     """
     Converts a coordinate from IGC format (DDMMmmmN/S/E/W) to decimal degrees.
-    e.g., "5101234N" becomes 51.02056666...
     """
-    # The last character is the direction (N/S/E/W)
     direction = igc_coord[-1]
-
-    # Degrees are the first two digits for latitude, or three for longitude
     if direction in 'NS':
         degrees = float(igc_coord[:2])
         minutes = float(igc_coord[2:-1]) / 1000.0
-    else:  # For Longitude
+    else:
         degrees = float(igc_coord[:3])
         minutes = float(igc_coord[3:-1]) / 1000.0
 
     decimal_degrees = degrees + (minutes / 60.0)
 
-    # Apply negative sign for South and West
     if direction in 'SW':
         return -decimal_degrees
     return decimal_degrees
@@ -71,7 +63,6 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 def time_to_seconds(time_str):
     """
     Converts a time string in 'HHMMSS' format to total seconds from midnight.
-    e.g., '120101' becomes 12 * 3600 + 1 * 60 + 1 = 43261 seconds.
     """
     try:
         hours = int(time_str[0:2])
@@ -82,14 +73,10 @@ def time_to_seconds(time_str):
         return None
 
 
-def plot_igc_with_thermals(filepath):
+def find_thermals_in_file(filepath):
     """
-    Reads an IGC file, manually parses the flight data, identifies potential
-    thermals and circling areas, and plots the flight path with them marked.
-    Also, identifies significant climbs and their corresponding horizontal distance.
-
-    Args:
-        filepath (str): The path to the IGC file.
+    Parses a single IGC file to find and group thermal events.
+    Returns a list of thermal events, where each event is a dictionary.
     """
     try:
         latitudes = []
@@ -97,32 +84,14 @@ def plot_igc_with_thermals(filepath):
         altitudes = []
         timestamps_seconds = []
 
-        pilot_name = "Unknown Pilot"
-
         with open(filepath, 'r') as file:
             for line in file:
                 record_type = line[0]
-
-                # Extract pilot name from header
-                if record_type == 'H' and line[3:6] == 'PLT':
-                    pilot_name = line[6:].strip()
-
-                # Parse B-records for flight data
                 if record_type == 'B' and len(line) >= 35:
                     try:
-                        # Extract and convert time to seconds from midnight
-                        time_str = line[1:7]
-                        time_s = time_to_seconds(time_str)
-
-                        # Extract and convert latitude (e.g., '5101234N')
-                        lat_igc = line[7:15]
-                        lat = igc_to_decimal_degrees(lat_igc)
-
-                        # Extract and convert longitude (e.g., '00700400W')
-                        lon_igc = line[15:24]
-                        lon = igc_to_decimal_degrees(lon_igc)
-
-                        # Extract barometric altitude (e.g., '01423')
+                        time_s = time_to_seconds(line[1:7])
+                        lat = igc_to_decimal_degrees(line[7:15])
+                        lon = igc_to_decimal_degrees(line[15:24])
                         alt = int(line[25:30])
 
                         latitudes.append(lat)
@@ -130,190 +99,174 @@ def plot_igc_with_thermals(filepath):
                         altitudes.append(alt)
                         timestamps_seconds.append(time_s)
 
-                    except (ValueError, IndexError) as e:
-                        print(f"Warning: Failed to parse B-record line: '{line.strip()}' due to error: {e}")
+                    except (ValueError, IndexError):
                         continue
 
         if not latitudes:
-            print("Error: The IGC file was read, but no B-records (GPS fixes) were found.")
-            print("Please ensure the IGC file is not corrupted and contains valid flight data.")
-            return
+            print(f"Warning: No valid GPS points found in {filepath}. Skipping.")
+            return []
 
-        print(f"Successfully parsed {len(latitudes)} GPS points from the IGC file.")
-
-        # --- 1. Identify circling/stationary periods (advanced heuristic) ---
+        # Find circling points
         circling_points_indices = []
-
-        print("Analyzing flight data for circling periods...")
         for i in range(time_window, len(altitudes)):
             altitude_diff = altitudes[i] - altitudes[i - time_window]
             distance_traveled = haversine_distance(
                 latitudes[i], longitudes[i],
                 latitudes[i - time_window], longitudes[i - time_window]
             )
-
             if altitude_diff > altitude_change_threshold and distance_traveled < distance_threshold:
                 circling_points_indices.append(i)
 
-        print(f"Found {len(circling_points_indices)} potential circling points.")
-
-        # --- 2. Group successive circling periods into single thermals ---
+        # Group successive circling points into single thermals
         thermals_data = []
-        if circling_points_indices:
-            current_thermal = {
-                'start_index': circling_points_indices[0],
-                'end_index': circling_points_indices[0],
-                'altitude_gain': altitudes[circling_points_indices[0]] - altitudes[
-                    circling_points_indices[0] - time_window]
-            }
+        if not circling_points_indices:
+            return []
 
-            for i in range(1, len(circling_points_indices)):
-                current_point_index = circling_points_indices[i]
-                previous_point_index = circling_points_indices[i - 1]
+        # Initialize the first thermal
+        current_thermal = {
+            'start_index': circling_points_indices[0],
+            'end_index': circling_points_indices[0]
+        }
 
-                # Check if the current point is successive to the previous one
-                if current_point_index == previous_point_index + 1:
-                    current_thermal['end_index'] = current_point_index
-                    current_thermal['altitude_gain'] += (
-                                altitudes[current_point_index] - altitudes[current_point_index - time_window])
-                else:
-                    # New thermal starts
-                    thermals_data.append(current_thermal)
-                    current_thermal = {
-                        'start_index': current_point_index,
-                        'end_index': current_point_index,
-                        'altitude_gain': altitudes[current_point_index] - altitudes[current_point_index - time_window]
-                    }
-            thermals_data.append(current_thermal)
+        for i in range(1, len(circling_points_indices)):
+            current_point_index = circling_points_indices[i]
+            previous_point_index = circling_points_indices[i - 1]
 
-        # --- 3. Identify significant continuous climbs and their distance and strength ---
-        significant_climb_segments = []
+            if current_point_index == previous_point_index + 1:
+                # Still in the same thermal, just update the end index
+                current_thermal['end_index'] = current_point_index
+            else:
+                # New thermal starts, so finalize the previous one
+                current_thermal['altitude_gain'] = altitudes[current_thermal['end_index']] - altitudes[
+                    current_thermal['start_index']]
+                thermals_data.append(current_thermal)
 
-        print("Analyzing flight data for significant climbs...")
-        in_climb = False
-        climb_start_index = 0
-        for i in range(1, len(altitudes)):
-            # Check for the start of a new climb
-            if not in_climb and altitudes[i] > altitudes[i - 1]:
-                in_climb = True
-                climb_start_index = i - 1
+                # Start a new thermal
+                current_thermal = {
+                    'start_index': current_point_index,
+                    'end_index': current_point_index,
+                }
 
-            # Check for the end of a climb
-            if in_climb and altitudes[i] <= altitudes[i - 1]:
-                climb_end_index = i
-                total_altitude_gain = altitudes[climb_end_index - 1] - altitudes[climb_start_index]
+        # Append the last thermal after the loop
+        current_thermal['altitude_gain'] = altitudes[current_thermal['end_index']] - altitudes[
+            current_thermal['start_index']]
+        thermals_data.append(current_thermal)
 
-                if total_altitude_gain >= significant_climb_threshold:
-                    distance = haversine_distance(
-                        latitudes[climb_start_index], longitudes[climb_start_index],
-                        latitudes[climb_end_index - 1], longitudes[climb_end_index - 1]
-                    )
+        # Add location and climb rate to each thermal
+        for thermal in thermals_data:
+            start_lat = latitudes[thermal['start_index']]
+            start_lon = longitudes[thermal['start_index']]
+            end_lat = latitudes[thermal['end_index']]
+            end_lon = longitudes[thermal['end_index']]
+            thermal['start_location'] = (start_lat, start_lon)
+            thermal['end_location'] = (end_lat, end_lon)
 
-                    # Calculate duration using timestamps for accuracy
-                    duration = timestamps_seconds[climb_end_index - 1] - timestamps_seconds[climb_start_index]
-                    climb_rate = total_altitude_gain / duration if duration > 0 else 0
+            duration = timestamps_seconds[thermal['end_index']] - timestamps_seconds[thermal['start_index']]
+            thermal['climb_rate'] = thermal['altitude_gain'] / duration if duration > 0 else 0
 
-                    significant_climb_segments.append({
-                        'start_index': climb_start_index,
-                        'end_index': climb_end_index,
-                        'altitude_gain': total_altitude_gain,
-                        'distance': distance,
-                        'climb_rate': climb_rate
-                    })
-                in_climb = False
-
-        # Handle case where climb extends to the end of the file
-        if in_climb:
-            climb_end_index = len(altitudes)
-            total_altitude_gain = altitudes[climb_end_index - 1] - altitudes[climb_start_index]
-            if total_altitude_gain >= significant_climb_threshold:
-                distance = haversine_distance(
-                    latitudes[climb_start_index], longitudes[climb_start_index],
-                    latitudes[climb_end_index - 1], longitudes[climb_end_index - 1]
-                )
-                duration = timestamps_seconds[climb_end_index - 1] - timestamps_seconds[climb_start_index]
-                climb_rate = total_altitude_gain / duration if duration > 0 else 0
-
-                significant_climb_segments.append({
-                    'start_index': climb_start_index,
-                    'end_index': climb_end_index,
-                    'altitude_gain': total_altitude_gain,
-                    'distance': distance,
-                    'climb_rate': climb_rate
-                })
-
-        # --- 4. Print the details of all detected climbs and thermals ---
-        print("\n--- Thermal (Grouped Circling Periods) Analysis ---")
-        if thermals_data:
-            print(f"Found {len(thermals_data)} distinct thermal events.")
-            for i, thermal in enumerate(thermals_data):
-                duration = timestamps_seconds[thermal['end_index']] - timestamps_seconds[thermal['start_index']]
-                climb_rate = thermal['altitude_gain'] / duration if duration > 0 else 0
-                print(f"  Thermal Event {i + 1}:")
-                print(
-                    f"    Start Location: Lat {latitudes[thermal['start_index']]:.5f}, Lon {longitudes[thermal['start_index']]:.5f}")
-                print(f"    Total Altitude Gain: {thermal['altitude_gain']:.2f} meters")
-                print(f"    Duration: {duration} seconds")
-                print(f"    Average Climb Rate: {climb_rate:.2f} m/s")
-        else:
-            print("No thermals (circling periods) found.")
-
-        print("\n--- Significant Climb Analysis ---")
-        total_climb_rate = 0
-        if significant_climb_segments:
-            for i, segment in enumerate(significant_climb_segments):
-                print(f"Climb Segment {i + 1}:")
-                print(f"  Altitude Gain: {segment['altitude_gain']:.2f} meters")
-                print(f"  Horizontal Distance: {segment['distance']:.2f} meters")
-                print(f"  Climb Rate (Strength): {segment['climb_rate']:.2f} m/s")
-                total_climb_rate += segment['climb_rate']
-
-            avg_climb_rate = total_climb_rate / len(significant_climb_segments)
-            print(f"\nAverage Climb Rate (Thermal Strength) for all segments: {avg_climb_rate:.2f} m/s")
-        else:
-            print("No significant climbs found to analyze.")
-
-        # --- 5. Plot the flight path and significant climbs ---
-        plt.figure(figsize=(10, 8))
-
-        plt.plot(longitudes, latitudes, color='blue', label='Flight Path', zorder=1)
-
-        # Plot grouped thermals
-        if thermals_data:
-            thermal_lons = [longitudes[t['start_index']] for t in thermals_data]
-            thermal_lats = [latitudes[t['start_index']] for t in thermals_data]
-            plt.scatter(thermal_lons, thermal_lats, c='green', marker='o', s=150, label=f'Thermals (Grouped Circling)',
-                        zorder=3)
-
-        significant_climb_lon = [longitudes[seg['end_index']] for seg in significant_climb_segments]
-        significant_climb_lat = [latitudes[seg['end_index']] for seg in significant_climb_segments]
-        plt.scatter(significant_climb_lon, significant_climb_lat, c='yellow', marker='^', s=150,
-                    label=f'Significant Climb (>{significant_climb_threshold}m)', zorder=4)
-
-        # --- 6. Add labels, title, and a legend for clarity ---
-        plt.xlabel('Longitude')
-        plt.ylabel('Latitude')
-
-        plt.title(f'IGC Flight Path with Thermal Indications for {pilot_name}')
-
-        plt.legend()
-        plt.grid(True)
-        plt.show()
-
-
+        return thermals_data
     except FileNotFoundError:
-        print(f"Error: The file at '{filepath}' was not found. Please check the path and try again.")
+        print(f"Error: The file at '{filepath}' was not found.")
+        return []
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        print(f"An unexpected error occurred while processing {filepath}: {e}")
+        return []
 
 
-# --- User Input Section ---
-if __name__ == "__main__":
-    igc_file = input("Please enter the path to your IGC file: ")
-    if not igc_file.lower().endswith(".igc"):
-        igc_file += ".igc"
+def main():
+    """
+    Main function to analyze multiple IGC files and plot thermal distributions.
+    """
+    # --- Input folder to analyze ---
+    folder_path = input("Please enter the path to the folder containing your IGC files: ")
 
-    if os.path.exists(igc_file):
-        plot_igc_with_thermals(igc_file)
+    # Filter for IGC files
+    igc_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.lower().endswith('.igc')]
+
+    if not igc_files:
+        print(f"No IGC files found in the folder: {folder_path}. Please check the path and try again.")
+        return
+
+    all_thermal_strengths = []
+    all_thermal_distances = []
+    all_thermals_locations = []
+
+    print("Starting multi-file thermal analysis...")
+
+    for filename in igc_files:
+        print(f"Processing file: {filename}")
+        thermals = find_thermals_in_file(filename)
+
+        if not thermals:
+            continue
+
+        # Collect thermal strengths
+        for thermal in thermals:
+            # Only consider thermals with a positive climb rate
+            if thermal['climb_rate'] > 0:
+                all_thermal_strengths.append(thermal['climb_rate'])
+
+        # Calculate and collect distances between successive thermals for this flight
+        for i in range(1, len(thermals)):
+            start_lat1, start_lon1 = thermals[i - 1]['start_location']
+            start_lat2, start_lon2 = thermals[i]['start_location']
+            distance = haversine_distance(start_lat1, start_lon1, start_lat2, start_lon2)
+            all_thermal_distances.append(distance / 1000)  # Store in kilometers
+
+        # Collect all thermal start locations for a scatter plot
+        for thermal in thermals:
+            all_thermals_locations.append(thermal['start_location'])
+
+    print("\n--- Summary of all analyzed IGC files ---")
+    print(f"Total thermals identified across all files: {len(all_thermal_strengths)}")
+
+    if not all_thermal_strengths:
+        print("No thermals were identified in any of the provided files. Cannot perform analysis.")
+        return
+
+    # --- Print Summary Statistics ---
+    print("\n--- Thermal Strength Distribution ---")
+    average_strength = np.mean(all_thermal_strengths)
+    print(f"Average Strength: {average_strength:.2f} m/s")
+    print(f"Median Strength: {np.median(all_thermal_strengths):.2f} m/s")
+    print(f"Standard Deviation: {np.std(all_thermal_strengths):.2f} m/s")
+
+    # Calculate lambda for the exponential distribution
+    lambda_param = 1 / average_strength if average_strength > 0 else 0
+    print(f"Calculated lambda (λ) parameter: {lambda_param:.4f}")
+
+    print("\n--- Distance Between Thermals Distribution ---")
+    if all_thermal_distances:
+        print(f"Average Distance: {np.mean(all_thermal_distances):.2f} km")
+        print(f"Median Distance: {np.median(all_thermal_distances):.2f} km")
+        print(f"Standard Deviation: {np.std(all_thermal_distances):.2f} km")
     else:
-        print(f"The file '{igc_file}' does not exist.")
+        print("Not enough thermals to calculate distances.")
+
+    # --- Plot the distributions ---
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+    # Plot 1: Thermal Strength Distribution
+    axes[0].hist(all_thermal_strengths, bins=15, density=True, color='skyblue', edgecolor='black')
+    axes[0].set_title('Probability Distribution of Thermal Strength')
+    axes[0].set_xlabel('Thermal Strength (Average Climb Rate in m/s)')
+    axes[0].set_ylabel('Probability Density')
+    axes[0].grid(axis='y', alpha=0.75)
+
+    # Plot 2: Distance Between Thermals Distribution
+    if all_thermal_distances:
+        axes[1].hist(all_thermal_distances, bins=15, density=True, color='lightgreen', edgecolor='black')
+        axes[1].set_title('Probability Distribution of Thermal Distance')
+        axes[1].set_xlabel('Distance Between Thermals (km)')
+        axes[1].set_ylabel('Probability Density')
+        axes[1].grid(axis='y', alpha=0.75)
+    else:
+        axes[1].set_title('Not enough thermals to plot distances')
+
+    plt.suptitle('Thermal Distribution Analysis Across All Flights')
+    plt.tight_layout()
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()
