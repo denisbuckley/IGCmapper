@@ -1,7 +1,8 @@
 #
 # This script analyzes multiple IGC files from a specified folder to
 # determine the probability distributions of thermal distance and strength.
-# It also calculates the lambda parameter for the thermal strength distribution.
+# It also calculates the exponential and Poisson lambda parameters, and
+# the thermal encounter rate per kilometer.
 #
 # Required libraries: matplotlib, numpy
 # Install with: pip install matplotlib numpy
@@ -76,7 +77,8 @@ def time_to_seconds(time_str):
 def find_thermals_in_file(filepath):
     """
     Parses a single IGC file to find and group thermal events.
-    Returns a list of thermal events, where each event is a dictionary.
+    Returns a list of thermal events, where each event is a dictionary,
+    and the total duration of the flight in seconds.
     """
     try:
         latitudes = []
@@ -104,7 +106,7 @@ def find_thermals_in_file(filepath):
 
         if not latitudes:
             print(f"Warning: No valid GPS points found in {filepath}. Skipping.")
-            return []
+            return [], 0, 0
 
         # Find circling points
         circling_points_indices = []
@@ -120,7 +122,10 @@ def find_thermals_in_file(filepath):
         # Group successive circling points into single thermals
         thermals_data = []
         if not circling_points_indices:
-            return []
+            flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
+            flight_distance = haversine_distance(latitudes[0], longitudes[0], latitudes[-1], longitudes[-1]) if len(
+                latitudes) > 1 else 0
+            return [], flight_duration, flight_distance
 
         # Initialize the first thermal
         current_thermal = {
@@ -164,13 +169,17 @@ def find_thermals_in_file(filepath):
             duration = timestamps_seconds[thermal['end_index']] - timestamps_seconds[thermal['start_index']]
             thermal['climb_rate'] = thermal['altitude_gain'] / duration if duration > 0 else 0
 
-        return thermals_data
+        flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
+        flight_distance = haversine_distance(latitudes[0], longitudes[0], latitudes[-1], longitudes[-1]) if len(
+            latitudes) > 1 else 0
+
+        return thermals_data, flight_duration, flight_distance
     except FileNotFoundError:
         print(f"Error: The file at '{filepath}' was not found.")
-        return []
+        return [], 0, 0
     except Exception as e:
         print(f"An unexpected error occurred while processing {filepath}: {e}")
-        return []
+        return [], 0, 0
 
 
 def main():
@@ -189,13 +198,16 @@ def main():
 
     all_thermal_strengths = []
     all_thermal_distances = []
-    all_thermals_locations = []
+    total_flight_duration_seconds = 0
+    total_flight_distance_meters = 0
 
     print("Starting multi-file thermal analysis...")
 
     for filename in igc_files:
         print(f"Processing file: {filename}")
-        thermals = find_thermals_in_file(filename)
+        thermals, duration_s, distance_m = find_thermals_in_file(filename)
+        total_flight_duration_seconds += duration_s
+        total_flight_distance_meters += distance_m
 
         if not thermals:
             continue
@@ -213,12 +225,9 @@ def main():
             distance = haversine_distance(start_lat1, start_lon1, start_lat2, start_lon2)
             all_thermal_distances.append(distance / 1000)  # Store in kilometers
 
-        # Collect all thermal start locations for a scatter plot
-        for thermal in thermals:
-            all_thermals_locations.append(thermal['start_location'])
-
     print("\n--- Summary of all analyzed IGC files ---")
-    print(f"Total thermals identified across all files: {len(all_thermal_strengths)}")
+    total_thermals = len(all_thermal_strengths)
+    print(f"Total thermals identified across all files: {total_thermals}")
 
     if not all_thermal_strengths:
         print("No thermals were identified in any of the provided files. Cannot perform analysis.")
@@ -232,16 +241,30 @@ def main():
     print(f"Standard Deviation: {np.std(all_thermal_strengths):.2f} m/s")
 
     # Calculate lambda for the exponential distribution
-    lambda_param = 1 / average_strength if average_strength > 0 else 0
-    print(f"Calculated lambda (λ) parameter: {lambda_param:.4f}")
+    exponential_lambda = 1 / average_strength if average_strength > 0 else 0
+    print(f"Calculated Exponential lambda (λ) parameter: {exponential_lambda:.4f}")
 
     print("\n--- Distance Between Thermals Distribution ---")
     if all_thermal_distances:
-        print(f"Average Distance: {np.mean(all_thermal_distances):.2f} km")
+        average_distance_km = np.mean(all_thermal_distances)
+        print(f"Average Distance: {average_distance_km:.2f} km")
         print(f"Median Distance: {np.median(all_thermal_distances):.2f} km")
         print(f"Standard Deviation: {np.std(all_thermal_distances):.2f} km")
+
+        # Calculate the probability of encountering a thermal per kilometer
+        thermal_rate_per_km = 1 / average_distance_km if average_distance_km > 0 else 0
+        print(f"Calculated Thermal Encounter Rate per km: {thermal_rate_per_km:.2f} thermals/km")
     else:
         print("Not enough thermals to calculate distances.")
+
+    print("\n--- Poisson Distribution Analysis ---")
+    total_flight_duration_hours = total_flight_duration_seconds / 3600
+    if total_flight_duration_hours > 0:
+        poisson_lambda = total_thermals / total_flight_duration_hours
+        print(f"Total flight duration: {total_flight_duration_hours:.2f} hours")
+        print(f"Calculated Poisson lambda (λ) parameter: {poisson_lambda:.2f} thermals/hour")
+    else:
+        print("Not enough flight data to calculate Poisson lambda.")
 
     # --- Plot the distributions ---
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
