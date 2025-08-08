@@ -22,9 +22,9 @@ altitude_change_threshold = 20  # meters
 # New parameter to merge thermal segments separated by short gaps.
 max_gap_seconds = 50  # seconds, maximum time gap to consider two segments part of the same thermal
 # New parameter to filter out large distances that skew the distribution.
-max_thermal_distance_km = 100  # kilometers, maximum distance to consider between thermals
+max_thermal_distance_km = 30  # kilometers, maximum distance to consider between thermals
 # New parameter to group closely spaced thermals into a single event for distance calculation.
-max_merge_distance_km = 2  # kilometers, maximum distance to consider two thermals as a single event
+max_merge_distance_km = 3  # kilometers, maximum distance to consider two thermals as a single event
 
 
 def igc_to_decimal_degrees(igc_coord):
@@ -205,7 +205,8 @@ def main():
     Main function to analyze multiple IGC files and plot thermal distributions.
     """
     # --- Input folder to analyze ---
-    folder_path = input("Please enter the path to the folder containing your IGC files: ")
+    # Put your IGC files in a folder named 'igc' in the same directory as this script.
+    folder_path = "./igc"
 
     # Filter for IGC files
     igc_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.lower().endswith('.igc')]
