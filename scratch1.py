@@ -2,6 +2,7 @@
 # This script analyzes multiple IGC files to determine the probability distributions
 # of thermal distance and strength. It also calculates the exponential lambda,
 # and a spatial Poisson lambda (thermal density) in thermals per km^2.
+# It has been updated to also analyze sustained segments of lift that are not thermals.
 #
 # Required libraries: matplotlib, numpy, scipy
 # Install with: pip install matplotlib numpy scipy
@@ -18,6 +19,8 @@ from scipy.spatial import ConvexHull
 time_window = 10  # seconds to check for sustained climb and confined area
 distance_threshold = 100  # meters, max distance traveled in the time window
 altitude_change_threshold = 20  # meters
+# New parameter to merge thermal segments separated by short gaps.
+max_gap_seconds = 30  # seconds, maximum time gap to consider two segments part of the same thermal
 
 
 def igc_to_decimal_degrees(igc_coord):
@@ -71,11 +74,10 @@ def time_to_seconds(time_str):
         return None
 
 
-def find_thermals_and_flight_path(filepath):
+def find_thermals_and_sustained_lift(filepath):
     """
-    Parses a single IGC file to find thermals and collect all flight path coordinates.
-    Returns a list of thermal events, total flight duration, and a list of all
-    (latitude, longitude) coordinates.
+    Parses a single IGC file to find thermals (circling) and sustained lift (linear).
+    Returns a list of thermal events, sustained lift segments, and flight path coordinates.
     """
     try:
         latitudes = []
@@ -103,75 +105,95 @@ def find_thermals_and_flight_path(filepath):
 
         if not latitudes:
             print(f"Warning: No valid GPS points found in {filepath}. Skipping.")
-            return [], 0, []
+            return [], [], 0, []
 
-        # Find circling points
-        circling_points_indices = []
+        # Find sustained lift points (either circling or linear)
+        sustained_lift_points_indices = []
         for i in range(time_window, len(altitudes)):
             altitude_diff = altitudes[i] - altitudes[i - time_window]
             distance_traveled = haversine_distance(
                 latitudes[i], longitudes[i],
                 latitudes[i - time_window], longitudes[i - time_window]
             )
-            if altitude_diff > altitude_change_threshold and distance_traveled < distance_threshold:
-                circling_points_indices.append(i)
+            if altitude_diff > altitude_change_threshold:
+                sustained_lift_points_indices.append(i)
 
-        # Group successive circling points into single thermals
+        # Group successive sustained lift points into distinct segments,
+        # with tolerance for short gaps.
         thermals_data = []
-        if not circling_points_indices:
+        sustained_lift_data = []
+
+        if not sustained_lift_points_indices:
             flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
             flight_path = list(zip(latitudes, longitudes))
-            return [], flight_duration, flight_path
+            return [], [], flight_duration, flight_path
 
-        # Initialize the first thermal
-        current_thermal = {
-            'start_index': circling_points_indices[0],
-            'end_index': circling_points_indices[0]
-        }
+        # Initialize the first segment
+        current_segment_indices = [sustained_lift_points_indices[0]]
+        for i in range(1, len(sustained_lift_points_indices)):
+            current_point_index = sustained_lift_points_indices[i]
+            previous_point_index = sustained_lift_points_indices[i - 1]
+            time_gap = timestamps_seconds[current_point_index] - timestamps_seconds[previous_point_index]
 
-        for i in range(1, len(circling_points_indices)):
-            current_point_index = circling_points_indices[i]
-            previous_point_index = circling_points_indices[i - 1]
-
-            if current_point_index == previous_point_index + 1:
-                # Still in the same thermal, just update the end index
-                current_thermal['end_index'] = current_point_index
+            if time_gap <= max_gap_seconds:
+                current_segment_indices.append(current_point_index)
             else:
-                # New thermal starts, so finalize the previous one
-                current_thermal['altitude_gain'] = altitudes[current_thermal['end_index']] - altitudes[
-                    current_thermal['start_index']]
-                thermals_data.append(current_thermal)
+                start_index = current_segment_indices[0]
+                end_index = current_segment_indices[-1]
+                distance_traveled = haversine_distance(
+                    latitudes[start_index], longitudes[start_index],
+                    latitudes[end_index], longitudes[end_index]
+                )
+                altitude_gain = altitudes[end_index] - altitudes[start_index]
+                duration = timestamps_seconds[end_index] - timestamps_seconds[start_index]
 
-                # Start a new thermal
-                current_thermal = {
-                    'start_index': current_point_index,
-                    'end_index': current_point_index,
+                segment = {
+                    'start_location': (latitudes[start_index], longitudes[start_index]),
+                    'end_location': (latitudes[end_index], longitudes[end_index]),
+                    'altitude_gain': altitude_gain,
+                    'climb_rate': altitude_gain / duration if duration > 0 else 0
                 }
 
-        # Append the last thermal after the loop
-        current_thermal['altitude_gain'] = altitudes[current_thermal['end_index']] - altitudes[
-            current_thermal['start_index']]
-        thermals_data.append(current_thermal)
+                if distance_traveled < distance_threshold:
+                    thermals_data.append(segment)
+                else:
+                    sustained_lift_data.append(segment)
 
-        # Add location and climb rate to each thermal
-        for thermal in thermals_data:
-            start_lat = latitudes[thermal['start_index']]
-            start_lon = longitudes[thermal['start_index']]
-            thermal['start_location'] = (start_lat, start_lon)
+                current_segment_indices = [current_point_index]
 
-            duration = timestamps_seconds[thermal['end_index']] - timestamps_seconds[thermal['start_index']]
-            thermal['climb_rate'] = thermal['altitude_gain'] / duration if duration > 0 else 0
+        # Process the last segment
+        if current_segment_indices:
+            start_index = current_segment_indices[0]
+            end_index = current_segment_indices[-1]
+            distance_traveled = haversine_distance(
+                latitudes[start_index], longitudes[start_index],
+                latitudes[end_index], longitudes[end_index]
+            )
+            altitude_gain = altitudes[end_index] - altitudes[start_index]
+            duration = timestamps_seconds[end_index] - timestamps_seconds[start_index]
+
+            segment = {
+                'start_location': (latitudes[start_index], longitudes[start_index]),
+                'end_location': (latitudes[end_index], longitudes[end_index]),
+                'altitude_gain': altitude_gain,
+                'climb_rate': altitude_gain / duration if duration > 0 else 0
+            }
+
+            if distance_traveled < distance_threshold:
+                thermals_data.append(segment)
+            else:
+                sustained_lift_data.append(segment)
 
         flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
         flight_path = list(zip(latitudes, longitudes))
 
-        return thermals_data, flight_duration, flight_path
+        return thermals_data, sustained_lift_data, flight_duration, flight_path
     except FileNotFoundError:
         print(f"Error: The file at '{filepath}' was not found.")
-        return [], 0, []
+        return [], [], 0, []
     except Exception as e:
         print(f"An unexpected error occurred while processing {filepath}: {e}")
-        return [], 0, []
+        return [], [], 0, []
 
 
 def main():
@@ -190,6 +212,7 @@ def main():
 
     all_thermal_strengths = []
     all_thermal_distances = []
+    all_sustained_lift_distances = []
     total_flight_duration_seconds = 0
     total_flight_area_sq_m = 0
 
@@ -197,7 +220,7 @@ def main():
 
     for filename in igc_files:
         print(f"Processing file: {filename}")
-        thermals, duration_s, flight_path_coords = find_thermals_and_flight_path(filename)
+        thermals, sustained_lift_segments, duration_s, flight_path_coords = find_thermals_and_sustained_lift(filename)
         total_flight_duration_seconds += duration_s
 
         if flight_path_coords and len(flight_path_coords) >= 3:
@@ -221,9 +244,6 @@ def main():
             except Exception as e:
                 print(f"Could not calculate convex hull area for {filename}: {e}")
 
-        if not thermals:
-            continue
-
         # Collect thermal strengths
         for thermal in thermals:
             if thermal['climb_rate'] > 0:
@@ -236,52 +256,67 @@ def main():
             distance = haversine_distance(start_lat1, start_lon1, start_lat2, start_lon2)
             all_thermal_distances.append(distance / 1000)  # Store in kilometers
 
+        # Calculate and collect distances between successive sustained lift segments for this flight
+        for i in range(1, len(sustained_lift_segments)):
+            start_lat1, start_lon1 = sustained_lift_segments[i - 1]['start_location']
+            start_lat2, start_lon2 = sustained_lift_segments[i]['start_location']
+            distance = haversine_distance(start_lat1, start_lon1, start_lat2, start_lon2)
+            all_sustained_lift_distances.append(distance / 1000)  # Store in kilometers
+
     print("\n--- Summary of all analyzed IGC files ---")
     total_thermals = len(all_thermal_strengths)
     print(f"Total thermals identified across all files: {total_thermals}")
 
     if not all_thermal_strengths:
         print("No thermals were identified in any of the provided files. Cannot perform analysis.")
-        return
-
-    # --- Print Summary Statistics ---
-    print("\n--- Thermal Strength Distribution ---")
-    average_strength = np.mean(all_thermal_strengths)
-    print(f"Average Strength: {average_strength:.2f} m/s")
-    print(f"Median Strength: {np.median(all_thermal_strengths):.2f} m/s")
-    print(f"Standard Deviation: {np.std(all_thermal_strengths):.2f} m/s")
-
-    # Calculate lambda for the exponential distribution
-    exponential_lambda = 1 / average_strength if average_strength > 0 else 0
-    print(f"Calculated Exponential lambda (λ) parameter: {exponential_lambda:.4f}")
-
-    print("\n--- Distance Between Thermals Distribution ---")
-    if all_thermal_distances:
-        average_distance_km = np.mean(all_thermal_distances)
-        print(f"Average Distance: {average_distance_km:.2f} km")
-        print(f"Median Distance: {np.median(all_thermal_distances):.2f} km")
-        print(f"Standard Deviation: {np.std(all_thermal_distances):.2f} km")
-
-        # Calculate the probability of encountering a thermal per kilometer (linear density)
-        thermal_rate_per_km = 1 / average_distance_km if average_distance_km > 0 else 0
-        print(f"Calculated Linear Thermal Density: {thermal_rate_per_km:.2f} thermals/km")
     else:
-        print("Not enough thermals to calculate distances.")
+        # --- Print Summary Statistics for Thermals ---
+        print("\n--- Thermal Strength Distribution ---")
+        average_strength = np.mean(all_thermal_strengths)
+        print(f"Average Strength: {average_strength:.2f} m/s")
+        print(f"Median Strength: {np.median(all_thermal_strengths):.2f} m/s")
+        print(f"Standard Deviation: {np.std(all_thermal_strengths):.2f} m/s")
 
-    print("\n--- Thermal Spatial Density Analysis ---")
-    total_flight_area_sq_km = total_flight_area_sq_m / 1_000_000
-    if total_flight_area_sq_km > 0 and total_thermals > 0:
-        spatial_poisson_lambda = total_thermals / total_flight_area_sq_km
-        print(f"Total flight area (estimated): {total_flight_area_sq_km:.2f} km^2")
-        print(f"Calculated Spatial Poisson lambda (λ) parameter: {spatial_poisson_lambda:.5f} thermals/km^2")
+        # Calculate lambda for the exponential distribution
+        exponential_lambda = 1 / average_strength if average_strength > 0 else 0
+        print(f"Calculated Exponential lambda (λ) parameter: {exponential_lambda:.4f}")
+
+        print("\n--- Distance Between Thermals Distribution ---")
+        if all_thermal_distances:
+            average_distance_km = np.mean(all_thermal_distances)
+            print(f"Average Distance: {average_distance_km:.2f} km")
+            print(f"Median Distance: {np.median(all_thermal_distances):.2f} km")
+            print(f"Standard Deviation: {np.std(all_thermal_distances):.2f} km")
+
+            # Calculate the probability of encountering a thermal per kilometer (linear density)
+            thermal_rate_per_km = 1 / average_distance_km if average_distance_km > 0 else 0
+            print(f"Calculated Linear Thermal Density: {thermal_rate_per_km:.2f} thermals/km")
+        else:
+            print("Not enough thermals to calculate distances.")
+
+        print("\n--- Thermal Spatial Density Analysis ---")
+        total_flight_area_sq_km = total_flight_area_sq_m / 1_000_000
+        if total_flight_area_sq_km > 0 and total_thermals > 0:
+            spatial_poisson_lambda = total_thermals / total_flight_area_sq_km
+            print(f"Total flight area (estimated): {total_flight_area_sq_km:.2f} km^2")
+            print(f"Calculated Spatial Poisson lambda (λ) parameter: {spatial_poisson_lambda:.5f} thermals/km^2")
+        else:
+            print("Not enough flight data to calculate thermal spatial density.")
+
+    print("\n--- Sustained Lift Segment Analysis (Non-Circling) ---")
+    total_sustained_segments = len(all_sustained_lift_distances) + 1 if len(all_sustained_lift_distances) > 0 else 0
+    print(f"Total sustained lift segments identified: {total_sustained_segments}")
+    if all_sustained_lift_distances:
+        average_sustained_distance_km = np.mean(all_sustained_lift_distances)
+        print(f"Average Distance Between Segments: {average_sustained_distance_km:.2f} km")
     else:
-        print("Not enough flight data to calculate thermal spatial density.")
+        print("Not enough sustained lift segments to calculate distances.")
 
     # --- Plot the distributions ---
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
     # Plot 1: Thermal Strength Distribution
-    axes[0].hist(all_thermal_strengths, bins=15, density=True, color='skyblue', edgecolor='black')
+    axes[0].hist(all_thermal_strengths, bins=50, density=True, color='skyblue', edgecolor='black', range=(0, 10))
     axes[0].set_title('Probability Distribution of Thermal Strength')
     axes[0].set_xlabel('Thermal Strength (Average Climb Rate in m/s)')
     axes[0].set_ylabel('Probability Density')
@@ -289,7 +324,7 @@ def main():
 
     # Plot 2: Distance Between Thermals Distribution
     if all_thermal_distances:
-        axes[1].hist(all_thermal_distances, bins=15, density=True, color='lightgreen', edgecolor='black')
+        axes[1].hist(all_thermal_distances, bins=15, density=True, color='lightgreen', edgecolor='black', range=(0, 50))
         axes[1].set_title('Probability Distribution of Thermal Distance')
         axes[1].set_xlabel('Distance Between Thermals (km)')
         axes[1].set_ylabel('Probability Density')
