@@ -1,7 +1,7 @@
 #
 # This script manually reads and parses an IGC file, plotting the flight path
-# and marking potential thermals and circling areas. It does not require a
-# third-party IGC parsing library.
+# and marking potential thermals, circling areas, and significant climbs.
+# It does not require a third-party IGC parsing library.
 #
 # Required library: matplotlib
 # Install with: pip install matplotlib
@@ -10,6 +10,17 @@
 import matplotlib.pyplot as plt
 import os
 import math
+
+# --- User-configurable variables ---
+# Threshold for a simple altitude gain (red 'x' markers)
+altitude_change_threshold = 20  # meters
+
+# Heuristic parameters for identifying circling/stationary flight (green 'o' markers)
+time_window = 10  # seconds to check for sustained climb and confined area
+distance_threshold = 100  # meters, max distance traveled in the time window
+
+# Threshold for identifying a significant, continuous climb (yellow '^' markers)
+significant_climb_threshold = 200  # meters
 
 
 def igc_to_decimal_degrees(igc_coord):
@@ -67,7 +78,7 @@ def plot_igc_with_thermals(filepath):
         latitudes = []
         longitudes = []
         altitudes = []
-        times = []
+
         pilot_name = "Unknown Pilot"
 
         with open(filepath, 'r') as file:
@@ -96,9 +107,6 @@ def plot_igc_with_thermals(filepath):
                         longitudes.append(lon)
                         altitudes.append(alt)
 
-                        # Extract time (e.g., '120101')
-                        times.append(line[1:7])
-
                     except (ValueError, IndexError) as e:
                         print(f"Warning: Failed to parse B-record line: '{line.strip()}' due to error: {e}")
                         continue
@@ -108,10 +116,9 @@ def plot_igc_with_thermals(filepath):
             print("Please ensure the IGC file is not corrupted and contains valid flight data.")
             return
 
-        # --- 3. Identify potential thermals (simple altitude gain) ---
+        # --- 1. Identify potential thermals (simple altitude gain) ---
         thermals_lat = []
         thermals_lon = []
-        altitude_change_threshold = 20  # meters, adjust as needed
 
         print("Analyzing flight data for thermals...")
         for i in range(1, len(altitudes)):
@@ -122,20 +129,13 @@ def plot_igc_with_thermals(filepath):
 
         print(f"Found {len(thermals_lat)} potential thermals based on altitude gain.")
 
-        # --- 4. Identify circling/stationary periods (advanced heuristic) ---
-        # This heuristic looks for periods of sustained altitude gain while the glider
-        # is also staying within a small geographical area, indicating circling.
+        # --- 2. Identify circling/stationary periods (advanced heuristic) ---
         circling_lat = []
         circling_lon = []
-        time_window = 10  # Check against a point 10 seconds ago
-        distance_threshold = 100  # meters, max distance traveled in the time window
 
         print("Analyzing flight data for circling periods...")
         for i in range(time_window, len(altitudes)):
-            # Check for sustained altitude gain over the time window
             altitude_diff = altitudes[i] - altitudes[i - time_window]
-
-            # Check for a small geographical distance traveled over the time window
             distance_traveled = haversine_distance(
                 latitudes[i], longitudes[i],
                 latitudes[i - time_window], longitudes[i - time_window]
@@ -147,16 +147,42 @@ def plot_igc_with_thermals(filepath):
 
         print(f"Found {len(circling_lat)} potential circling points.")
 
-        # --- 5. Plot the flight path, thermals, and circling points ---
+        # --- 3. Identify significant continuous climbs ---
+        # This section identifies points where the altitude has increased by at least
+        # the significant_climb_threshold. This highlights major climbs in the flight.
+        significant_climb_lat = []
+        significant_climb_lon = []
+
+        print("Analyzing flight data for significant climbs...")
+        for i in range(1, len(altitudes)):
+            start_alt = altitudes[i - 1]
+            current_alt = altitudes[i]
+
+            # Check for a single-step climb that meets the threshold
+            if current_alt - start_alt >= significant_climb_threshold:
+                significant_climb_lat.append(latitudes[i])
+                significant_climb_lon.append(longitudes[i])
+
+            # Also check for a sustained climb over the time window
+            if i >= time_window and altitudes[i] - altitudes[i - time_window] >= significant_climb_threshold:
+                significant_climb_lat.append(latitudes[i])
+                significant_climb_lon.append(longitudes[i])
+
+        print(f"Found {len(significant_climb_lat)} potential significant climb points.")
+
+        # --- 4. Plot the flight path, thermals, circling, and significant climbs ---
         plt.figure(figsize=(10, 8))
 
         plt.plot(longitudes, latitudes, color='blue', label='Flight Path', zorder=1)
 
-        plt.scatter(thermals_lon, thermals_lat, c='red', marker='x', s=100, label='Altitude Gain', zorder=2)
+        plt.scatter(thermals_lon, thermals_lat, c='red', marker='x', s=100, label='Altitude Gain (>20m)', zorder=2)
 
         plt.scatter(circling_lon, circling_lat, c='green', marker='o', s=50, label='Circling/Stationary', zorder=3)
 
-        # --- 6. Add labels, title, and a legend for clarity ---
+        plt.scatter(significant_climb_lon, significant_climb_lat, c='yellow', marker='^', s=150,
+                    label='Significant Climb (>100m)', zorder=4)
+
+        # --- 5. Add labels, title, and a legend for clarity ---
         plt.xlabel('Longitude')
         plt.ylabel('Latitude')
 
