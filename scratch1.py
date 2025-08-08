@@ -78,7 +78,7 @@ def find_thermals_in_file(filepath):
     """
     Parses a single IGC file to find and group thermal events.
     Returns a list of thermal events, where each event is a dictionary,
-    and the total duration of the flight in seconds.
+    the total duration of the flight in seconds, and the total distance in meters.
     """
     try:
         latitudes = []
@@ -170,8 +170,9 @@ def find_thermals_in_file(filepath):
             thermal['climb_rate'] = thermal['altitude_gain'] / duration if duration > 0 else 0
 
         flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
-        flight_distance = haversine_distance(latitudes[0], longitudes[0], latitudes[-1], longitudes[-1]) if len(
-            latitudes) > 1 else 0
+        flight_distance = 0
+        for i in range(1, len(latitudes)):
+            flight_distance += haversine_distance(latitudes[i - 1], longitudes[i - 1], latitudes[i], longitudes[i])
 
         return thermals_data, flight_duration, flight_distance
     except FileNotFoundError:
@@ -258,11 +259,11 @@ def main():
         print("Not enough thermals to calculate distances.")
 
     print("\n--- Poisson Distribution Analysis ---")
-    total_flight_duration_hours = total_flight_duration_seconds / 3600
-    if total_flight_duration_hours > 0:
-        poisson_lambda = total_thermals / total_flight_duration_hours
-        print(f"Total flight duration: {total_flight_duration_hours:.2f} hours")
-        print(f"Calculated Poisson lambda (λ) parameter: {poisson_lambda:.2f} thermals/hour")
+    total_flight_distance_km = total_flight_distance_meters / 1000
+    if total_flight_distance_km > 0:
+        poisson_lambda = total_thermals / total_flight_distance_km
+        print(f"Total flight distance: {total_flight_distance_km:.2f} km")
+        print(f"Calculated Poisson lambda (λ) parameter: {poisson_lambda:.2f} thermals/km")
     else:
         print("Not enough flight data to calculate Poisson lambda.")
 
