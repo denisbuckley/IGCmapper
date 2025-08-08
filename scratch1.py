@@ -70,6 +70,7 @@ def plot_igc_with_thermals(filepath):
     """
     Reads an IGC file, manually parses the flight data, identifies potential
     thermals and circling areas, and plots the flight path with them marked.
+    Also, identifies significant climbs and their corresponding horizontal distance.
 
     Args:
         filepath (str): The path to the IGC file.
@@ -116,6 +117,8 @@ def plot_igc_with_thermals(filepath):
             print("Please ensure the IGC file is not corrupted and contains valid flight data.")
             return
 
+        print(f"Successfully parsed {len(latitudes)} GPS points from the IGC file.")
+
         # --- 1. Identify potential thermals (simple altitude gain) ---
         thermals_lat = []
         thermals_lon = []
@@ -147,30 +150,62 @@ def plot_igc_with_thermals(filepath):
 
         print(f"Found {len(circling_lat)} potential circling points.")
 
-        # --- 3. Identify significant continuous climbs ---
-        # This section identifies points where the altitude has increased by at least
-        # the significant_climb_threshold. This highlights major climbs in the flight.
-        significant_climb_lat = []
-        significant_climb_lon = []
+        # --- 3. Identify significant continuous climbs and their distance ---
+        significant_climb_segments = []
 
         print("Analyzing flight data for significant climbs...")
+        in_climb = False
+        climb_start_index = 0
         for i in range(1, len(altitudes)):
-            start_alt = altitudes[i - 1]
-            current_alt = altitudes[i]
+            # Check for the start of a new climb
+            if not in_climb and altitudes[i] > altitudes[i - 1]:
+                in_climb = True
+                climb_start_index = i - 1
 
-            # Check for a single-step climb that meets the threshold
-            if current_alt - start_alt >= significant_climb_threshold:
-                significant_climb_lat.append(latitudes[i])
-                significant_climb_lon.append(longitudes[i])
+            # Check for the end of a climb
+            if in_climb and altitudes[i] <= altitudes[i - 1]:
+                climb_end_index = i
+                total_altitude_gain = altitudes[climb_end_index - 1] - altitudes[climb_start_index]
 
-            # Also check for a sustained climb over the time window
-            if i >= time_window and altitudes[i] - altitudes[i - time_window] >= significant_climb_threshold:
-                significant_climb_lat.append(latitudes[i])
-                significant_climb_lon.append(longitudes[i])
+                if total_altitude_gain >= significant_climb_threshold:
+                    distance = haversine_distance(
+                        latitudes[climb_start_index], longitudes[climb_start_index],
+                        latitudes[climb_end_index - 1], longitudes[climb_end_index - 1]
+                    )
+                    significant_climb_segments.append({
+                        'start_index': climb_start_index,
+                        'end_index': climb_end_index,
+                        'altitude_gain': total_altitude_gain,
+                        'distance': distance
+                    })
+                in_climb = False
 
-        print(f"Found {len(significant_climb_lat)} potential significant climb points.")
+        # Handle case where climb extends to the end of the file
+        if in_climb:
+            climb_end_index = len(altitudes)
+            total_altitude_gain = altitudes[climb_end_index - 1] - altitudes[climb_start_index]
+            if total_altitude_gain >= significant_climb_threshold:
+                distance = haversine_distance(
+                    latitudes[climb_start_index], longitudes[climb_start_index],
+                    latitudes[climb_end_index - 1], longitudes[climb_end_index - 1]
+                )
+                significant_climb_segments.append({
+                    'start_index': climb_start_index,
+                    'end_index': climb_end_index,
+                    'altitude_gain': total_altitude_gain,
+                    'distance': distance
+                })
 
-        # --- 4. Plot the flight path, thermals, circling, and significant climbs ---
+        print(f"Found {len(significant_climb_segments)} significant climb segments.")
+
+        # --- 4. Print the details of the significant climbs ---
+        print("\n--- Significant Climb Analysis ---")
+        for i, segment in enumerate(significant_climb_segments):
+            print(f"Climb Segment {i + 1}:")
+            print(f"  Altitude Gain: {segment['altitude_gain']:.2f} meters")
+            print(f"  Horizontal Distance: {segment['distance']:.2f} meters")
+
+        # --- 5. Plot the flight path, thermals, circling, and significant climbs ---
         plt.figure(figsize=(10, 8))
 
         plt.plot(longitudes, latitudes, color='blue', label='Flight Path', zorder=1)
@@ -179,10 +214,12 @@ def plot_igc_with_thermals(filepath):
 
         plt.scatter(circling_lon, circling_lat, c='green', marker='o', s=50, label='Circling/Stationary', zorder=3)
 
+        significant_climb_lon = [longitudes[seg['end_index']] for seg in significant_climb_segments]
+        significant_climb_lat = [latitudes[seg['end_index']] for seg in significant_climb_segments]
         plt.scatter(significant_climb_lon, significant_climb_lat, c='yellow', marker='^', s=150,
-                    label='Significant Climb (>100m)', zorder=4)
+                    label=f'Significant Climb (>{significant_climb_threshold}m)', zorder=4)
 
-        # --- 5. Add labels, title, and a legend for clarity ---
+        # --- 6. Add labels, title, and a legend for clarity ---
         plt.xlabel('Longitude')
         plt.ylabel('Latitude')
 
@@ -191,6 +228,7 @@ def plot_igc_with_thermals(filepath):
         plt.legend()
         plt.grid(True)
         plt.show()
+
 
     except FileNotFoundError:
         print(f"Error: The file at '{filepath}' was not found. Please check the path and try again.")
