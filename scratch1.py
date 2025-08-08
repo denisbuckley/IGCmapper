@@ -1,26 +1,23 @@
 #
-# This script analyzes multiple IGC files from a specified folder to
-# determine the probability distributions of thermal distance and strength.
-# It also calculates the exponential and Poisson lambda parameters, and
-# the thermal encounter rate per kilometer.
+# This script analyzes multiple IGC files to determine the probability distributions
+# of thermal distance and strength. It also calculates the exponential lambda,
+# and a spatial Poisson lambda (thermal density) in thermals per km^2.
 #
-# Required libraries: matplotlib, numpy
-# Install with: pip install matplotlib numpy
+# Required libraries: matplotlib, numpy, scipy
+# Install with: pip install matplotlib numpy scipy
 #
 
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 import math
+from scipy.spatial import ConvexHull
 
 # --- User-configurable variables ---
 # Heuristic parameters for identifying a thermal (a sustained circling period).
 time_window = 10  # seconds to check for sustained climb and confined area
 distance_threshold = 100  # meters, max distance traveled in the time window
 altitude_change_threshold = 20  # meters
-
-# Threshold for identifying a significant, continuous climb for the plot.
-significant_climb_threshold = 200  # meters
 
 
 def igc_to_decimal_degrees(igc_coord):
@@ -74,11 +71,11 @@ def time_to_seconds(time_str):
         return None
 
 
-def find_thermals_in_file(filepath):
+def find_thermals_and_flight_path(filepath):
     """
-    Parses a single IGC file to find and group thermal events.
-    Returns a list of thermal events, where each event is a dictionary,
-    the total duration of the flight in seconds, and the total distance in meters.
+    Parses a single IGC file to find thermals and collect all flight path coordinates.
+    Returns a list of thermal events, total flight duration, and a list of all
+    (latitude, longitude) coordinates.
     """
     try:
         latitudes = []
@@ -106,7 +103,7 @@ def find_thermals_in_file(filepath):
 
         if not latitudes:
             print(f"Warning: No valid GPS points found in {filepath}. Skipping.")
-            return [], 0, 0
+            return [], 0, []
 
         # Find circling points
         circling_points_indices = []
@@ -123,9 +120,8 @@ def find_thermals_in_file(filepath):
         thermals_data = []
         if not circling_points_indices:
             flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
-            flight_distance = haversine_distance(latitudes[0], longitudes[0], latitudes[-1], longitudes[-1]) if len(
-                latitudes) > 1 else 0
-            return [], flight_duration, flight_distance
+            flight_path = list(zip(latitudes, longitudes))
+            return [], flight_duration, flight_path
 
         # Initialize the first thermal
         current_thermal = {
@@ -161,26 +157,21 @@ def find_thermals_in_file(filepath):
         for thermal in thermals_data:
             start_lat = latitudes[thermal['start_index']]
             start_lon = longitudes[thermal['start_index']]
-            end_lat = latitudes[thermal['end_index']]
-            end_lon = longitudes[thermal['end_index']]
             thermal['start_location'] = (start_lat, start_lon)
-            thermal['end_location'] = (end_lat, end_lon)
 
             duration = timestamps_seconds[thermal['end_index']] - timestamps_seconds[thermal['start_index']]
             thermal['climb_rate'] = thermal['altitude_gain'] / duration if duration > 0 else 0
 
         flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
-        flight_distance = 0
-        for i in range(1, len(latitudes)):
-            flight_distance += haversine_distance(latitudes[i - 1], longitudes[i - 1], latitudes[i], longitudes[i])
+        flight_path = list(zip(latitudes, longitudes))
 
-        return thermals_data, flight_duration, flight_distance
+        return thermals_data, flight_duration, flight_path
     except FileNotFoundError:
         print(f"Error: The file at '{filepath}' was not found.")
-        return [], 0, 0
+        return [], 0, []
     except Exception as e:
         print(f"An unexpected error occurred while processing {filepath}: {e}")
-        return [], 0, 0
+        return [], 0, []
 
 
 def main():
@@ -200,22 +191,41 @@ def main():
     all_thermal_strengths = []
     all_thermal_distances = []
     total_flight_duration_seconds = 0
-    total_flight_distance_meters = 0
+    total_flight_area_sq_m = 0
 
     print("Starting multi-file thermal analysis...")
 
     for filename in igc_files:
         print(f"Processing file: {filename}")
-        thermals, duration_s, distance_m = find_thermals_in_file(filename)
+        thermals, duration_s, flight_path_coords = find_thermals_and_flight_path(filename)
         total_flight_duration_seconds += duration_s
-        total_flight_distance_meters += distance_m
+
+        if flight_path_coords and len(flight_path_coords) >= 3:
+            points = np.array(flight_path_coords)
+            try:
+                hull = ConvexHull(points)
+                # Calculate area of the 2D polygon defined by the convex hull vertices
+                area_in_degrees = hull.area
+
+                # Approximate conversion from degrees^2 to m^2. This is an approximation
+                # and assumes a relatively small, flat area. The conversion factor
+                # changes with latitude, so we use a general approximation.
+                # 1 degree lat approx 111,132 m, 1 degree lon approx 111,320 * cos(lat) m
+                # We'll use a rough average value for simplicity.
+                avg_lat_rad = np.mean(points[:, 0]) * (math.pi / 180)
+                meters_per_lat_deg = 111132
+                meters_per_lon_deg = 111320 * math.cos(avg_lat_rad)
+                area_sq_m = area_in_degrees * meters_per_lat_deg * meters_per_lon_deg
+                total_flight_area_sq_m += area_sq_m
+
+            except Exception as e:
+                print(f"Could not calculate convex hull area for {filename}: {e}")
 
         if not thermals:
             continue
 
         # Collect thermal strengths
         for thermal in thermals:
-            # Only consider thermals with a positive climb rate
             if thermal['climb_rate'] > 0:
                 all_thermal_strengths.append(thermal['climb_rate'])
 
@@ -252,20 +262,20 @@ def main():
         print(f"Median Distance: {np.median(all_thermal_distances):.2f} km")
         print(f"Standard Deviation: {np.std(all_thermal_distances):.2f} km")
 
-        # Calculate the probability of encountering a thermal per kilometer
+        # Calculate the probability of encountering a thermal per kilometer (linear density)
         thermal_rate_per_km = 1 / average_distance_km if average_distance_km > 0 else 0
-        print(f"Calculated Thermal Encounter Rate per km: {thermal_rate_per_km:.2f} thermals/km")
+        print(f"Calculated Linear Thermal Density: {thermal_rate_per_km:.2f} thermals/km")
     else:
         print("Not enough thermals to calculate distances.")
 
-    print("\n--- Poisson Distribution Analysis ---")
-    total_flight_distance_km = total_flight_distance_meters / 1000
-    if total_flight_distance_km > 0:
-        poisson_lambda = total_thermals / total_flight_distance_km
-        print(f"Total flight distance: {total_flight_distance_km:.2f} km")
-        print(f"Calculated Poisson lambda (λ) parameter: {poisson_lambda:.2f} thermals/km")
+    print("\n--- Thermal Spatial Density Analysis ---")
+    total_flight_area_sq_km = total_flight_area_sq_m / 1_000_000
+    if total_flight_area_sq_km > 0 and total_thermals > 0:
+        spatial_poisson_lambda = total_thermals / total_flight_area_sq_km
+        print(f"Total flight area (estimated): {total_flight_area_sq_km:.2f} km^2")
+        print(f"Calculated Spatial Poisson lambda (λ) parameter: {spatial_poisson_lambda:.5f} thermals/km^2")
     else:
-        print("Not enough flight data to calculate Poisson lambda.")
+        print("Not enough flight data to calculate thermal spatial density.")
 
     # --- Plot the distributions ---
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
