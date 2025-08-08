@@ -1,6 +1,7 @@
 #
 # This script manually reads and parses an IGC file, plotting the flight path
-# and marking potential thermals. It does not require a third-party IGC parsing library.
+# and marking potential thermals and circling areas. It does not require a
+# third-party IGC parsing library.
 #
 # Required library: matplotlib
 # Install with: pip install matplotlib
@@ -8,6 +9,7 @@
 
 import matplotlib.pyplot as plt
 import os
+import math
 
 
 def igc_to_decimal_degrees(igc_coord):
@@ -34,10 +36,29 @@ def igc_to_decimal_degrees(igc_coord):
     return decimal_degrees
 
 
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """
+    Calculates the distance between two points on the Earth
+    (given in decimal degrees) using the Haversine formula.
+    Returns distance in meters.
+    """
+    R = 6371000  # Earth's radius in meters
+
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+
+    a = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return R * c
+
+
 def plot_igc_with_thermals(filepath):
     """
     Reads an IGC file, manually parses the flight data, identifies potential
-    thermals, and plots the flight path with thermals marked.
+    thermals and circling areas, and plots the flight path with them marked.
 
     Args:
         filepath (str): The path to the IGC file.
@@ -46,6 +67,7 @@ def plot_igc_with_thermals(filepath):
         latitudes = []
         longitudes = []
         altitudes = []
+        times = []
         pilot_name = "Unknown Pilot"
 
         with open(filepath, 'r') as file:
@@ -74,6 +96,9 @@ def plot_igc_with_thermals(filepath):
                         longitudes.append(lon)
                         altitudes.append(alt)
 
+                        # Extract time (e.g., '120101')
+                        times.append(line[1:7])
+
                     except (ValueError, IndexError) as e:
                         print(f"Warning: Failed to parse B-record line: '{line.strip()}' due to error: {e}")
                         continue
@@ -83,7 +108,7 @@ def plot_igc_with_thermals(filepath):
             print("Please ensure the IGC file is not corrupted and contains valid flight data.")
             return
 
-        # --- 3. Identify potential thermals (simple heuristic) ---
+        # --- 3. Identify potential thermals (simple altitude gain) ---
         thermals_lat = []
         thermals_lon = []
         altitude_change_threshold = 20  # meters, adjust as needed
@@ -95,20 +120,47 @@ def plot_igc_with_thermals(filepath):
                 thermals_lat.append(latitudes[i])
                 thermals_lon.append(longitudes[i])
 
-        print(f"Found {len(thermals_lat)} potential thermals.")
+        print(f"Found {len(thermals_lat)} potential thermals based on altitude gain.")
 
-        # --- 4. Plot the flight path and thermals on a map ---
+        # --- 4. Identify circling/stationary periods (advanced heuristic) ---
+        # This heuristic looks for periods of sustained altitude gain while the glider
+        # is also staying within a small geographical area, indicating circling.
+        circling_lat = []
+        circling_lon = []
+        time_window = 10  # Check against a point 10 seconds ago
+        distance_threshold = 100  # meters, max distance traveled in the time window
+
+        print("Analyzing flight data for circling periods...")
+        for i in range(time_window, len(altitudes)):
+            # Check for sustained altitude gain over the time window
+            altitude_diff = altitudes[i] - altitudes[i - time_window]
+
+            # Check for a small geographical distance traveled over the time window
+            distance_traveled = haversine_distance(
+                latitudes[i], longitudes[i],
+                latitudes[i - time_window], longitudes[i - time_window]
+            )
+
+            if altitude_diff > altitude_change_threshold and distance_traveled < distance_threshold:
+                circling_lat.append(latitudes[i])
+                circling_lon.append(longitudes[i])
+
+        print(f"Found {len(circling_lat)} potential circling points.")
+
+        # --- 5. Plot the flight path, thermals, and circling points ---
         plt.figure(figsize=(10, 8))
 
-        plt.plot(longitudes, latitudes, color='blue', label='Flight Path')
+        plt.plot(longitudes, latitudes, color='blue', label='Flight Path', zorder=1)
 
-        plt.scatter(thermals_lon, thermals_lat, c='red', marker='x', s=100, label='Potential Thermals')
+        plt.scatter(thermals_lon, thermals_lat, c='red', marker='x', s=100, label='Altitude Gain', zorder=2)
 
-        # --- 5. Add labels, title, and a legend for clarity ---
+        plt.scatter(circling_lon, circling_lat, c='green', marker='o', s=50, label='Circling/Stationary', zorder=3)
+
+        # --- 6. Add labels, title, and a legend for clarity ---
         plt.xlabel('Longitude')
         plt.ylabel('Latitude')
 
-        plt.title(f'IGC Flight Path with Thermals for {pilot_name}')
+        plt.title(f'IGC Flight Path with Thermal Indications for {pilot_name}')
 
         plt.legend()
         plt.grid(True)
