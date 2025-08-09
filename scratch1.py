@@ -22,9 +22,11 @@ altitude_change_threshold = 20  # meters
 # New parameter to merge thermal segments separated by short gaps.
 max_gap_seconds = 50  # seconds, maximum time gap to consider two segments part of the same thermal
 # New parameter to filter out large distances that skew the distribution.
-max_thermal_distance_km = 30  # kilometers, maximum distance to consider between thermals
+max_thermal_distance_km = 300  # kilometers, maximum distance to consider between thermals
 # New parameter to group closely spaced thermals into a single event for distance calculation.
-max_merge_distance_km = 3  # kilometers, maximum distance to consider two thermals as a single event
+max_merge_distance_km = 2  # kilometers, maximum distance to consider two thermals as a single event
+# NEW: Filter out distances based on time. Prevents linking thermals separated by long breaks.
+max_gliding_time_min = 30  # minutes, max time gap between thermals to consider for distance calculation
 
 
 def igc_to_decimal_degrees(igc_coord):
@@ -154,6 +156,8 @@ def find_thermals_and_sustained_lift(filepath):
                 segment = {
                     'start_location': (latitudes[start_index], longitudes[start_index]),
                     'end_location': (latitudes[end_index], longitudes[end_index]),
+                    'start_timestamp': timestamps_seconds[start_index],
+                    'end_timestamp': timestamps_seconds[end_index],
                     'altitude_gain': altitude_gain,
                     'climb_rate': altitude_gain / duration if duration > 0 else 0
                 }
@@ -179,6 +183,8 @@ def find_thermals_and_sustained_lift(filepath):
             segment = {
                 'start_location': (latitudes[start_index], longitudes[start_index]),
                 'end_location': (latitudes[end_index], longitudes[end_index]),
+                'start_timestamp': timestamps_seconds[start_index],
+                'end_timestamp': timestamps_seconds[end_index],
                 'altitude_gain': altitude_gain,
                 'climb_rate': altitude_gain / duration if duration > 0 else 0
             }
@@ -254,20 +260,36 @@ def main():
             if thermal['climb_rate'] > 0:
                 all_thermal_strengths.append(thermal['climb_rate'])
 
-        # --- New thermal merging logic for distance calculation ---
+        # --- NEW thermal distance calculation logic for distance calculation ---
+        # This calculates distances between consecutive thermals and filters out
+        # unrealistically large distances that skew the statistical analysis.
         if len(thermals) > 1:
-            last_merged_thermal_location = thermals[0]['start_location']
             for i in range(1, len(thermals)):
-                current_thermal_location = thermals[i]['start_location']
+                # Get the end location of the previous thermal
+                location1 = thermals[i - 1]['end_location']
+                # Get the start location of the current thermal
+                location2 = thermals[i]['start_location']
+                # Get the end timestamp of the previous thermal
+                timestamp1 = thermals[i - 1]['end_timestamp']
+                # Get the start timestamp of the current thermal
+                timestamp2 = thermals[i]['start_timestamp']
+
                 distance = haversine_distance(
-                    last_merged_thermal_location[0], last_merged_thermal_location[1],
-                    current_thermal_location[0], current_thermal_location[1]
+                    location1[0], location1[1],
+                    location2[0], location2[1]
                 ) / 1000  # Distance in km
 
-                if distance > max_merge_distance_km:
+                time_gap_seconds = timestamp2 - timestamp1
+
+                # Filter out small distances between thermals that are effectively
+                # part of the same thermal event, as defined by max_merge_distance_km.
+                # Also, filter out distances where the time gap is too long,
+                # indicating a break in the flight.
+                if distance > max_merge_distance_km and \
+                        distance <= max_thermal_distance_km and \
+                        time_gap_seconds <= max_gliding_time_min * 60:
                     all_thermal_distances.append(distance)
-                    last_merged_thermal_location = current_thermal_location
-        # -----------------------------------------------------------
+        # -----------------------------------------------------------------------
 
         # Calculate and collect distances between successive sustained lift segments for this flight
         for i in range(1, len(sustained_lift_segments)):
@@ -276,7 +298,7 @@ def main():
             distance = haversine_distance(start_lat1, start_lon1, start_lat2, start_lon2)
             all_sustained_lift_distances.append(distance / 1000)  # Store in kilometers
 
-    # Filter out distances greater than the user-defined maximum
+    # The filtering is now handled within the loop, so this line is less critical but still useful
     filtered_thermal_distances = [d for d in all_thermal_distances if d <= max_thermal_distance_km]
 
     print("\n--- Summary of all analyzed IGC files ---")
@@ -298,7 +320,7 @@ def main():
         print(f"Calculated Exponential lambda (λ) parameter: {exponential_lambda:.4f}")
 
         print(
-            f"\n--- Distance Between Thermals Distribution (Filtered with merge dist {max_merge_distance_km}km, max dist {max_thermal_distance_km}km) ---")
+            f"\n--- Distance Between Thermals Distribution (Filtered with merge dist {max_merge_distance_km}km, max dist {max_thermal_distance_km}km, max time {max_gliding_time_min}min) ---")
         if filtered_thermal_distances:
             average_distance_km = np.mean(filtered_thermal_distances)
             median_distance_km = np.median(filtered_thermal_distances)
@@ -343,7 +365,7 @@ def main():
     # Plot 2: Distance Between Thermals Distribution
     if filtered_thermal_distances:
         axes[1].hist(filtered_thermal_distances, bins=15, density=True, color='lightgreen', edgecolor='black',
-                     range=(0, 50))
+                     range=(0, max_thermal_distance_km))
         axes[1].set_title(f'Probability Distribution of Thermal Distance (filtered)')
         axes[1].set_xlabel('Distance Between Thermals (km)')
         axes[1].set_ylabel('Probability Density')
