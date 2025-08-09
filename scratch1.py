@@ -24,9 +24,9 @@ max_gap_seconds = 50  # seconds, maximum time gap to consider two segments part 
 # New parameter to filter out large distances that skew the distribution.
 max_thermal_distance_km = 300  # kilometers, maximum distance to consider between thermals
 # New parameter to group closely spaced thermals into a single event for distance calculation.
-max_merge_distance_km = 2  # kilometers, maximum distance to consider two thermals as a single event
+max_merge_distance_km = 5  # kilometers, maximum distance to consider two thermals as a single event
 # NEW: Filter out distances based on time. Prevents linking thermals separated by long breaks.
-max_gliding_time_min = 30  # minutes, max time gap between thermals to consider for distance calculation
+max_gliding_time_min = 20  # minutes, max time gap between thermals to consider for distance calculation
 
 
 def igc_to_decimal_degrees(igc_coord):
@@ -356,7 +356,7 @@ def main():
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
     # Plot 1: Thermal Strength Distribution
-    axes[0].hist(all_thermal_strengths, bins=50, density=True, color='skyblue', edgecolor='black', range=(0, 10))
+    axes[0].hist(all_thermal_strengths, bins=50, density=True, color='skyblue', edgecolor='black')
     axes[0].set_title('Probability Distribution of Thermal Strength')
     axes[0].set_xlabel('Thermal Strength (Average Climb Rate in m/s)')
     axes[0].set_ylabel('Probability Density')
@@ -364,8 +364,7 @@ def main():
 
     # Plot 2: Distance Between Thermals Distribution
     if filtered_thermal_distances:
-        axes[1].hist(filtered_thermal_distances, bins=15, density=True, color='lightgreen', edgecolor='black',
-                     range=(0, max_thermal_distance_km))
+        axes[1].hist(filtered_thermal_distances, bins=15, density=True, color='lightgreen', edgecolor='black')
         axes[1].set_title(f'Probability Distribution of Thermal Distance (filtered)')
         axes[1].set_xlabel('Distance Between Thermals (km)')
         axes[1].set_ylabel('Probability Density')
