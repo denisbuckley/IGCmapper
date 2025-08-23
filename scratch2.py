@@ -1,319 +1,161 @@
 #
-# This script manually reads and parses an IGC file, plotting the flight path
-# and marking potential thermals, circling areas, and significant climbs.
-# It does not require a third-party IGC parsing library.
+# This script reads IGC files from a specified folder, uses the find_thermals_and_sustained_lift
+# function from the thermal_mapper module to identify thermals, and then compiles this
+# data into a pandas DataFrame for easy export and analysis.
 #
-# Required library: matplotlib
-# Install with: pip install matplotlib
+# It has been amended to filter out thermals below a certain strength and to consolidate
+# closely spaced thermals.
 #
+# Required libraries: pandas, numpy
+# Make sure your thermal_mapper.py script is in the same directory.
+#
+# Install with: pip install pandas numpy
+# adjust the min_climb_rate and radius_km parameters in the consolidate_thermals function call to fine-tune the filtering.
 
-import matplotlib.pyplot as plt
 import os
-import math
-
-# --- User-configurable variables ---
-# Threshold for a simple altitude gain (red 'x' markers)
-altitude_change_threshold = 20  # meters
-
-# Heuristic parameters for identifying circling/stationary flight (green 'o' markers)
-# This heuristic assumes that a thermal is being worked if the pilot gains
-# altitude while staying within a confined area, defined by the variables below.
-time_window = 10  # seconds to check for sustained climb and confined area
-distance_threshold = 100  # meters, max distance traveled in the time window
-
-# Threshold for identifying a significant, continuous climb (yellow '^' markers)
-significant_climb_threshold = 200  # meters
+import pandas as pd
+import numpy as np
+import thermal_mapper  # Assumes thermal_mapper.py is in the same directory
 
 
-def igc_to_decimal_degrees(igc_coord):
+def get_thermals_as_dataframe(folder_path):
     """
-    Converts a coordinate from IGC format (DDMMmmmN/S/E/W) to decimal degrees.
-    e.g., "5101234N" becomes 51.02056666...
-    """
-    # The last character is the direction (N/S/E/W)
-    direction = igc_coord[-1]
-
-    # Degrees are the first two digits for latitude, or three for longitude
-    if direction in 'NS':
-        degrees = float(igc_coord[:2])
-        minutes = float(igc_coord[2:-1]) / 1000.0
-    else:  # For Longitude
-        degrees = float(igc_coord[:3])
-        minutes = float(igc_coord[3:-1]) / 1000.0
-
-    decimal_degrees = degrees + (minutes / 60.0)
-
-    # Apply negative sign for South and West
-    if direction in 'SW':
-        return -decimal_degrees
-    return decimal_degrees
-
-
-def haversine_distance(lat1, lon1, lat2, lon2):
-    """
-    Calculates the distance between two points on the Earth
-    (given in decimal degrees) using the Haversine formula.
-    Returns distance in meters.
-    """
-    R = 6371000  # Earth's radius in meters
-
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
-
-    a = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-    return R * c
-
-
-def time_to_seconds(time_str):
-    """
-    Converts a time string in 'HHMMSS' format to total seconds from midnight.
-    e.g., '120101' becomes 12 * 3600 + 1 * 60 + 1 = 43261 seconds.
-    """
-    try:
-        hours = int(time_str[0:2])
-        minutes = int(time_str[2:4])
-        seconds = int(time_str[4:6])
-        return hours * 3600 + minutes * 60 + seconds
-    except (ValueError, IndexError):
-        return None
-
-
-def plot_igc_with_thermals(filepath):
-    """
-    Reads an IGC file, manually parses the flight data, identifies potential
-    thermals and circling areas, and plots the flight path with them marked.
-    Also, identifies significant climbs and their corresponding horizontal distance.
+    Analyzes IGC files in a folder and returns a pandas DataFrame with
+    the start and end coordinates, and climb rate of each thermal found.
 
     Args:
-        filepath (str): The path to the IGC file.
+        folder_path (str): The path to the folder containing IGC files.
+
+    Returns:
+        pandas.DataFrame: A DataFrame with columns for thermal data.
+                          Returns an empty DataFrame if no thermals are found.
     """
-    try:
-        latitudes = []
-        longitudes = []
-        altitudes = []
-        timestamps_seconds = []
+    # Check if the folder exists and contains IGC files
+    if not os.path.isdir(folder_path):
+        print(f"Error: The folder '{folder_path}' does not exist.")
+        return pd.DataFrame()
 
-        pilot_name = "Unknown Pilot"
+    igc_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.lower().endswith('.igc')]
 
-        with open(filepath, 'r') as file:
-            for line in file:
-                record_type = line[0]
+    if not igc_files:
+        print(f"No IGC files found in the folder: {folder_path}.")
+        return pd.DataFrame()
 
-                # Extract pilot name from header
-                if record_type == 'H' and line[3:6] == 'PLT':
-                    pilot_name = line[6:].strip()
+    all_thermal_data = []
+    print("Extracting thermal data from IGC files...")
 
-                # Parse B-records for flight data
-                if record_type == 'B' and len(line) >= 35:
-                    try:
-                        # Extract and convert time to seconds from midnight
-                        time_str = line[1:7]
-                        time_s = time_to_seconds(time_str)
+    # Iterate through each IGC file and extract thermal data
+    for filename in igc_files:
+        thermals, _, _, _ = thermal_mapper.find_thermals_and_sustained_lift(filename)
 
-                        # Extract and convert latitude (e.g., '5101234N')
-                        lat_igc = line[7:15]
-                        lat = igc_to_decimal_degrees(lat_igc)
-
-                        # Extract and convert longitude (e.g., '00700400W')
-                        lon_igc = line[15:24]
-                        lon = igc_to_decimal_degrees(lon_igc)
-
-                        # Extract barometric altitude (e.g., '01423')
-                        alt = int(line[25:30])
-
-                        latitudes.append(lat)
-                        longitudes.append(lon)
-                        altitudes.append(alt)
-                        timestamps_seconds.append(time_s)
-
-                    except (ValueError, IndexError) as e:
-                        print(f"Warning: Failed to parse B-record line: '{line.strip()}' due to error: {e}")
-                        continue
-
-        if not latitudes:
-            print("Error: The IGC file was read, but no B-records (GPS fixes) were found.")
-            print("Please ensure the IGC file is not corrupted and contains valid flight data.")
-            return
-
-        print(f"Successfully parsed {len(latitudes)} GPS points from the IGC file.")
-
-        # --- 1. Identify circling/stationary periods (advanced heuristic) ---
-        circling_points_indices = []
-
-        print("Analyzing flight data for circling periods...")
-        for i in range(time_window, len(altitudes)):
-            altitude_diff = altitudes[i] - altitudes[i - time_window]
-            distance_traveled = haversine_distance(
-                latitudes[i], longitudes[i],
-                latitudes[i - time_window], longitudes[i - time_window]
-            )
-
-            if altitude_diff > altitude_change_threshold and distance_traveled < distance_threshold:
-                circling_points_indices.append(i)
-
-        print(f"Found {len(circling_points_indices)} potential circling points.")
-
-        # --- 2. Group successive circling periods into single thermals ---
-        thermals_data = []
-        if circling_points_indices:
-            current_thermal = {
-                'start_index': circling_points_indices[0],
-                'end_index': circling_points_indices[0],
-                'altitude_gain': altitudes[circling_points_indices[0]] - altitudes[
-                    circling_points_indices[0] - time_window]
+        # Append the data of each thermal to the list
+        for thermal in thermals:
+            # We are extracting the start and end coordinates of each thermal
+            thermal_point_data = {
+                'thermal_start_lat': thermal['start_location'][0],
+                'thermal_start_lon': thermal['start_location'][1],
+                'thermal_end_lat': thermal['end_location'][0],
+                'thermal_end_lon': thermal['end_location'][1],
+                'climb_rate_m_per_s': thermal['climb_rate'],
+                'altitude_gain_m': thermal['altitude_gain'],
+                'file_name': os.path.basename(filename)
             }
+            all_thermal_data.append(thermal_point_data)
 
-            for i in range(1, len(circling_points_indices)):
-                current_point_index = circling_points_indices[i]
-                previous_point_index = circling_points_indices[i - 1]
+    # Create the pandas DataFrame from the collected data
+    df = pd.DataFrame(all_thermal_data)
 
-                # Check if the current point is successive to the previous one
-                if current_point_index == previous_point_index + 1:
-                    current_thermal['end_index'] = current_point_index
-                    current_thermal['altitude_gain'] += (
-                                altitudes[current_point_index] - altitudes[current_point_index - time_window])
-                else:
-                    # New thermal starts
-                    thermals_data.append(current_thermal)
-                    current_thermal = {
-                        'start_index': current_point_index,
-                        'end_index': current_point_index,
-                        'altitude_gain': altitudes[current_point_index] - altitudes[current_point_index - time_window]
-                    }
-            thermals_data.append(current_thermal)
-
-        # --- 3. Identify significant continuous climbs and their distance and strength ---
-        significant_climb_segments = []
-
-        print("Analyzing flight data for significant climbs...")
-        in_climb = False
-        climb_start_index = 0
-        for i in range(1, len(altitudes)):
-            # Check for the start of a new climb
-            if not in_climb and altitudes[i] > altitudes[i - 1]:
-                in_climb = True
-                climb_start_index = i - 1
-
-            # Check for the end of a climb
-            if in_climb and altitudes[i] <= altitudes[i - 1]:
-                climb_end_index = i
-                total_altitude_gain = altitudes[climb_end_index - 1] - altitudes[climb_start_index]
-
-                if total_altitude_gain >= significant_climb_threshold:
-                    distance = haversine_distance(
-                        latitudes[climb_start_index], longitudes[climb_start_index],
-                        latitudes[climb_end_index - 1], longitudes[climb_end_index - 1]
-                    )
-
-                    # Calculate duration using timestamps for accuracy
-                    duration = timestamps_seconds[climb_end_index - 1] - timestamps_seconds[climb_start_index]
-                    climb_rate = total_altitude_gain / duration if duration > 0 else 0
-
-                    significant_climb_segments.append({
-                        'start_index': climb_start_index,
-                        'end_index': climb_end_index,
-                        'altitude_gain': total_altitude_gain,
-                        'distance': distance,
-                        'climb_rate': climb_rate
-                    })
-                in_climb = False
-
-        # Handle case where climb extends to the end of the file
-        if in_climb:
-            climb_end_index = len(altitudes)
-            total_altitude_gain = altitudes[climb_end_index - 1] - altitudes[climb_start_index]
-            if total_altitude_gain >= significant_climb_threshold:
-                distance = haversine_distance(
-                    latitudes[climb_start_index], longitudes[climb_start_index],
-                    latitudes[climb_end_index - 1], longitudes[climb_end_index - 1]
-                )
-                duration = timestamps_seconds[climb_end_index - 1] - timestamps_seconds[climb_start_index]
-                climb_rate = total_altitude_gain / duration if duration > 0 else 0
-
-                significant_climb_segments.append({
-                    'start_index': climb_start_index,
-                    'end_index': climb_end_index,
-                    'altitude_gain': total_altitude_gain,
-                    'distance': distance,
-                    'climb_rate': climb_rate
-                })
-
-        # --- 4. Print the details of all detected climbs and thermals ---
-        print("\n--- Thermal (Grouped Circling Periods) Analysis ---")
-        if thermals_data:
-            print(f"Found {len(thermals_data)} distinct thermal events.")
-            for i, thermal in enumerate(thermals_data):
-                duration = timestamps_seconds[thermal['end_index']] - timestamps_seconds[thermal['start_index']]
-                climb_rate = thermal['altitude_gain'] / duration if duration > 0 else 0
-                print(f"  Thermal Event {i + 1}:")
-                print(
-                    f"    Start Location: Lat {latitudes[thermal['start_index']]:.5f}, Lon {longitudes[thermal['start_index']]:.5f}")
-                print(f"    Total Altitude Gain: {thermal['altitude_gain']:.2f} meters")
-                print(f"    Duration: {duration} seconds")
-                print(f"    Average Climb Rate: {climb_rate:.2f} m/s")
-        else:
-            print("No thermals (circling periods) found.")
-
-        print("\n--- Significant Climb Analysis ---")
-        total_climb_rate = 0
-        if significant_climb_segments:
-            for i, segment in enumerate(significant_climb_segments):
-                print(f"Climb Segment {i + 1}:")
-                print(f"  Altitude Gain: {segment['altitude_gain']:.2f} meters")
-                print(f"  Horizontal Distance: {segment['distance']:.2f} meters")
-                print(f"  Climb Rate (Strength): {segment['climb_rate']:.2f} m/s")
-                total_climb_rate += segment['climb_rate']
-
-            avg_climb_rate = total_climb_rate / len(significant_climb_segments)
-            print(f"\nAverage Climb Rate (Thermal Strength) for all segments: {avg_climb_rate:.2f} m/s")
-        else:
-            print("No significant climbs found to analyze.")
-
-        # --- 5. Plot the flight path and significant climbs ---
-        plt.figure(figsize=(10, 8))
-
-        plt.plot(longitudes, latitudes, color='blue', label='Flight Path', zorder=1)
-
-        # Plot grouped thermals
-        if thermals_data:
-            thermal_lons = [longitudes[t['start_index']] for t in thermals_data]
-            thermal_lats = [latitudes[t['start_index']] for t in thermals_data]
-            plt.scatter(thermal_lons, thermal_lats, c='green', marker='o', s=150, label=f'Thermals (Grouped Circling)',
-                        zorder=3)
-
-        significant_climb_lon = [longitudes[seg['end_index']] for seg in significant_climb_segments]
-        significant_climb_lat = [latitudes[seg['end_index']] for seg in significant_climb_segments]
-        plt.scatter(significant_climb_lon, significant_climb_lat, c='yellow', marker='^', s=150,
-                    label=f'Significant Climb (>{significant_climb_threshold}m)', zorder=4)
-
-        # --- 6. Add labels, title, and a legend for clarity ---
-        plt.xlabel('Longitude')
-        plt.ylabel('Latitude')
-
-        plt.title(f'IGC Flight Path with Thermal Indications for {pilot_name}')
-
-        plt.legend()
-        plt.grid(True)
-        plt.show()
-
-
-    except FileNotFoundError:
-        print(f"Error: The file at '{filepath}' was not found. Please check the path and try again.")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-
-
-# --- User Input Section ---
-if __name__ == "__main__":
-    igc_file = input("Please enter the path to your IGC file: ")
-    if not igc_file.lower().endswith(".igc"):
-        igc_file += ".igc"
-
-    if os.path.exists(igc_file):
-        plot_igc_with_thermals(igc_file)
+    if not df.empty:
+        print(f"Successfully extracted data for {len(df)} thermals.")
     else:
-        print(f"The file '{igc_file}' does not exist.")
+        print("No thermals were identified in the provided files.")
+
+    return df
+
+
+def consolidate_thermals(df, min_climb_rate=0.5, radius_km=1):
+    """
+    Filters a DataFrame of thermals and consolidates those that are within
+    a specified radius, keeping only the strongest thermal in each cluster.
+
+    Args:
+        df (pd.DataFrame): DataFrame of thermal data.
+        min_climb_rate (float): Minimum climb rate in m/s to be considered.
+        radius_km (int): Radius in kilometers for clustering.
+
+    Returns:
+        pd.DataFrame: A new DataFrame with consolidated thermal data.
+    """
+    if df.empty:
+        return pd.DataFrame()
+
+    # Step 1: Filter out thermals below the minimum climb rate
+    filtered_df = df[df['climb_rate_m_per_s'] > min_climb_rate].copy()
+    if filtered_df.empty:
+        print(f"No thermals found with a climb rate greater than {min_climb_rate} m/s.")
+        return pd.DataFrame()
+
+    # Sort the DataFrame by climb rate in descending order to prioritize strongest thermals
+    filtered_df = filtered_df.sort_values(by='climb_rate_m_per_s', ascending=False).reset_index(drop=True)
+
+    consolidated_thermals = []
+
+    # Step 2: Iteratively consolidate thermals
+    while not filtered_df.empty:
+        # The first thermal in the sorted list is the strongest one remaining
+        strongest_thermal = filtered_df.iloc[0]
+
+        # Add this strongest thermal to our final list
+        consolidated_thermals.append(strongest_thermal)
+
+        # Create a boolean mask to identify thermals within the consolidation radius
+        strongest_lat = strongest_thermal['thermal_start_lat']
+        strongest_lon = strongest_thermal['thermal_start_lon']
+
+        distances = filtered_df.apply(
+            lambda row: thermal_mapper.haversine_distance(
+                strongest_lat, strongest_lon,
+                row['thermal_start_lat'], row['thermal_start_lon']
+            ) / 1000,  # Convert to km
+            axis=1
+        )
+
+        # Mark all thermals in the cluster for removal
+        thermals_to_remove_indices = filtered_df[distances <= radius_km].index
+
+        # Remove the thermals in the cluster from the DataFrame for the next iteration
+        filtered_df = filtered_df.drop(thermals_to_remove_indices).reset_index(drop=True)
+
+    final_df = pd.DataFrame(consolidated_thermals).reset_index(drop=True)
+
+    # Filter and rename the columns as requested by the user
+    final_df = final_df[['thermal_start_lat', 'thermal_start_lon', 'climb_rate_m_per_s']].copy()
+    final_df = final_df.rename(columns={
+        'thermal_start_lat': 'latitude',
+        'thermal_start_lon': 'longitude',
+        'climb_rate_m_per_s': 'strength_m_per_s'
+    })
+
+    print(f"Consolidated {len(df)} thermals into {len(final_df)} events.")
+    return final_df
+
+
+if __name__ == "__main__":
+    # Example usage: Change this path to the directory containing your IGC files
+    igc_folder = "./igc"
+
+    # Step 1: Get the raw thermal data as a DataFrame
+    thermal_df = get_thermals_as_dataframe(igc_folder)
+
+    # Step 2: Consolidate the thermals based on the new logic
+    consolidated_df = consolidate_thermals(thermal_df)
+
+    # Print the DataFrame to the console
+    if not consolidated_df.empty:
+        print("\n--- Consolidated Thermal Data DataFrame ---")
+        print(consolidated_df)
+
+        # You can save the DataFrame to a CSV file for use in Google Earth or other tools
+        output_csv = "consolidated_thermal_data.csv"
+        consolidated_df.to_csv(output_csv, index=False)
+        print(f"\nConsolidated DataFrame saved to '{output_csv}'")
