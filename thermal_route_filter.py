@@ -86,23 +86,33 @@ if __name__ == "__main__":
         print(f"An error occurred while reading the CSV file: {e}")
         exit()
 
-    # Calculate the target heading (bearing) of the flight path
+    # Calculate the target heading (bearing) of the flight path and its total distance
     target_heading = calculate_bearing(start_lat, start_lon, end_lat, end_lon)
+    flight_path_distance_km = haversine_distance(start_lat, start_lon, end_lat, end_lon) / 1000
+
     print(f"\nTarget heading from start to end waypoint: {target_heading:.2f} degrees")
+    print(f"Total flight path distance: {flight_path_distance_km:.2f} km")
 
     # Calculate the lower and upper bounds of the sector
     lower_bound = (target_heading - sector_angle + 360) % 360
     upper_bound = (target_heading + sector_angle) % 360
 
     print(
-        f"Filtering thermals within a {sector_angle * 2}-degree sector ({lower_bound:.2f} to {upper_bound:.2f} degrees).")
+        f"Filtering thermals within a {sector_angle * 2}-degree sector ({lower_bound:.2f} to {upper_bound:.2f} degrees) and along the flight path.")
 
-    # Calculate the bearing from the starting point to each thermal
+    # Calculate the bearing and distance from the starting point to each thermal
     thermal_df['bearing_to_thermal'] = thermal_df.apply(
         lambda row: calculate_bearing(
             start_lat, start_lon,
             row['latitude'], row['longitude']
         ),
+        axis=1
+    )
+    thermal_df['distance_from_start_km'] = thermal_df.apply(
+        lambda row: haversine_distance(
+            start_lat, start_lon,
+            row['latitude'], row['longitude']
+        ) / 1000,
         axis=1
     )
 
@@ -111,27 +121,21 @@ if __name__ == "__main__":
         # Simple case: the sector does not cross the 0/360 boundary
         filtered_thermals = thermal_df[
             (thermal_df['bearing_to_thermal'] >= lower_bound) &
-            (thermal_df['bearing_to_thermal'] <= upper_bound)
+            (thermal_df['bearing_to_thermal'] <= upper_bound) &
+            (thermal_df['distance_from_start_km'] <= flight_path_distance_km)
             ].copy()  # Explicitly create a copy
     else:
         # Complex case: the sector crosses the 0/360 boundary (e.g., 340 to 20)
         filtered_thermals = thermal_df[
-            (thermal_df['bearing_to_thermal'] >= lower_bound) |
-            (thermal_df['bearing_to_thermal'] <= upper_bound)
+            ((thermal_df['bearing_to_thermal'] >= lower_bound) |
+             (thermal_df['bearing_to_thermal'] <= upper_bound)) &
+            (thermal_df['distance_from_start_km'] <= flight_path_distance_km)
             ].copy()  # Explicitly create a copy
 
     # Display results
     print(f"\nFound {len(filtered_thermals)} thermals within the specified sector.")
 
     if not filtered_thermals.empty:
-        # Fix the SettingWithCopyWarning by using .loc
-        filtered_thermals.loc[:, 'distance_from_start_km'] = filtered_thermals.apply(
-            lambda row: haversine_distance(
-                start_lat, start_lon,
-                row['latitude'], row['longitude']
-            ) / 1000,
-            axis=1
-        )
         filtered_thermals = filtered_thermals.sort_values(by='distance_from_start_km')
 
         print("\n--- Filtered Thermals ---")
