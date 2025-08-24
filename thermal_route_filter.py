@@ -56,21 +56,24 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
 if __name__ == "__main__":
     # --- User-configurable file and parameters ---
     thermal_file = "consolidated_thermal_coords.csv"
-    sector_angle = 30  # degrees on either side of the heading
+    default_sector_angle = 30  # degrees on either side of the heading
 
     # Check if the thermal data file exists
     if not os.path.exists(thermal_file):
         print(f"Error: The file '{thermal_file}' was not found. Please run the thermal-data-extractor.py script first.")
         exit()
 
-    # Get the waypoints from the user
+    # Get the waypoints and sector angle from the user
     try:
         start_lat = float(input("Enter starting waypoint latitude: "))
         start_lon = float(input("Enter starting waypoint longitude: "))
         end_lat = float(input("Enter ending waypoint latitude: "))
         end_lon = float(input("Enter ending waypoint longitude: "))
+
+        sector_angle_input = input(f"Enter search sector degrees (default: {default_sector_angle}): ")
+        sector_angle = float(sector_angle_input) if sector_angle_input else default_sector_angle
     except ValueError:
-        print("\nInvalid input. Please enter valid numbers for the coordinates. Exiting.")
+        print("\nInvalid input. Please enter valid numbers for the coordinates and angle. Exiting.")
         exit()
 
     # Load the thermal data
@@ -109,20 +112,20 @@ if __name__ == "__main__":
         filtered_thermals = thermal_df[
             (thermal_df['bearing_to_thermal'] >= lower_bound) &
             (thermal_df['bearing_to_thermal'] <= upper_bound)
-            ]
+            ].copy()  # Explicitly create a copy
     else:
         # Complex case: the sector crosses the 0/360 boundary (e.g., 340 to 20)
         filtered_thermals = thermal_df[
             (thermal_df['bearing_to_thermal'] >= lower_bound) |
             (thermal_df['bearing_to_thermal'] <= upper_bound)
-            ]
+            ].copy()  # Explicitly create a copy
 
     # Display results
     print(f"\nFound {len(filtered_thermals)} thermals within the specified sector.")
 
     if not filtered_thermals.empty:
-        # Sort by distance from the start point for easier viewing
-        filtered_thermals['distance_from_start_km'] = filtered_thermals.apply(
+        # Fix the SettingWithCopyWarning by using .loc
+        filtered_thermals.loc[:, 'distance_from_start_km'] = filtered_thermals.apply(
             lambda row: haversine_distance(
                 start_lat, start_lon,
                 row['latitude'], row['longitude']
