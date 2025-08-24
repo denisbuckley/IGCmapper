@@ -4,13 +4,14 @@
 # data into a pandas DataFrame for easy export and analysis.
 #
 # It has been amended to filter out thermals below a certain strength and to consolidate
-# closely spaced thermals.
+# closely spaced thermals. It now returns two DataFrames: one with coordinates and strength,
+# and a second with only the coordinates.
 #
 # Required libraries: pandas, numpy
 # Make sure your thermal_mapper.py script is in the same directory.
 #
 # Install with: pip install pandas numpy
-# adjust the min_climb_rate and radius_km parameters in the consolidate_thermals function call to fine-tune the filtering.
+#
 
 import os
 import pandas as pd
@@ -73,7 +74,7 @@ def get_thermals_as_dataframe(folder_path):
     return df
 
 
-def consolidate_thermals(df, min_climb_rate=0.5, radius_km=1):
+def consolidate_thermals(df, min_climb_rate=1, radius_km=2):
     """
     Filters a DataFrame of thermals and consolidates those that are within
     a specified radius, keeping only the strongest thermal in each cluster.
@@ -84,16 +85,18 @@ def consolidate_thermals(df, min_climb_rate=0.5, radius_km=1):
         radius_km (int): Radius in kilometers for clustering.
 
     Returns:
-        pd.DataFrame: A new DataFrame with consolidated thermal data.
+        tuple: A tuple containing two pandas DataFrames:
+               1. A DataFrame with consolidated thermals including strength.
+               2. A DataFrame with only the latitude and longitude of the consolidated thermals.
     """
     if df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
     # Step 1: Filter out thermals below the minimum climb rate
     filtered_df = df[df['climb_rate_m_per_s'] > min_climb_rate].copy()
     if filtered_df.empty:
         print(f"No thermals found with a climb rate greater than {min_climb_rate} m/s.")
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
     # Sort the DataFrame by climb rate in descending order to prioritize strongest thermals
     filtered_df = filtered_df.sort_values(by='climb_rate_m_per_s', ascending=False).reset_index(drop=True)
@@ -126,18 +129,22 @@ def consolidate_thermals(df, min_climb_rate=0.5, radius_km=1):
         # Remove the thermals in the cluster from the DataFrame for the next iteration
         filtered_df = filtered_df.drop(thermals_to_remove_indices).reset_index(drop=True)
 
-    final_df = pd.DataFrame(consolidated_thermals).reset_index(drop=True)
+    final_df_with_strength = pd.DataFrame(consolidated_thermals).reset_index(drop=True)
 
-    # Filter and rename the columns as requested by the user
-    final_df = final_df[['thermal_start_lat', 'thermal_start_lon', 'climb_rate_m_per_s']].copy()
-    final_df = final_df.rename(columns={
+    # Filter and rename the columns for the DataFrame with strength
+    final_df_with_strength = final_df_with_strength[
+        ['thermal_start_lat', 'thermal_start_lon', 'climb_rate_m_per_s']].copy()
+    final_df_with_strength = final_df_with_strength.rename(columns={
         'thermal_start_lat': 'latitude',
         'thermal_start_lon': 'longitude',
         'climb_rate_m_per_s': 'strength_m_per_s'
     })
 
-    print(f"Consolidated {len(df)} thermals into {len(final_df)} events.")
-    return final_df
+    # Create the second DataFrame with only coordinates
+    final_df_coords = final_df_with_strength[['latitude', 'longitude']].copy()
+
+    print(f"Consolidated {len(df)} thermals into {len(final_df_with_strength)} events.")
+    return final_df_with_strength, final_df_coords
 
 
 if __name__ == "__main__":
@@ -148,14 +155,23 @@ if __name__ == "__main__":
     thermal_df = get_thermals_as_dataframe(igc_folder)
 
     # Step 2: Consolidate the thermals based on the new logic
-    consolidated_df = consolidate_thermals(thermal_df)
+    consolidated_df, coords_df = consolidate_thermals(thermal_df)
 
     # Print the DataFrame to the console
     if not consolidated_df.empty:
-        print("\n--- Consolidated Thermal Data DataFrame ---")
+        print("\n--- Consolidated Thermal Data DataFrame (with strength) ---")
         print(consolidated_df)
 
-        # You can save the DataFrame to a CSV file for use in Google Earth or other tools
-        output_csv = "consolidated_thermal_data.csv"
-        consolidated_df.to_csv(output_csv, index=False)
-        print(f"\nConsolidated DataFrame saved to '{output_csv}'")
+        print("\n--- Consolidated Thermal Coordinates DataFrame (without strength) ---")
+        print(coords_df)
+
+        # You can save the DataFrames to CSV files for use in Google Earth or other tools
+        output_csv_with_strength = "consolidated_thermal_data.csv"
+        consolidated_df.to_csv(output_csv_with_strength, index=False)
+        print(f"\nDataFrame with strength saved to '{output_csv_with_strength}'")
+
+        output_csv_coords = "consolidated_thermal_coords.csv"
+        coords_df.to_csv(output_csv_coords, index=False)
+        print(f"DataFrame with only coordinates saved to '{output_csv_coords}'")
+
+
