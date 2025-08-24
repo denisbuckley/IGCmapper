@@ -316,3 +316,4 @@ def consolidate_thermals(df, min_climb_rate, radius_km):
 
     print(f"Consolidated {len(df)} thermals into {len(final_df_with_strength)} events.")
     return final_df_with_strength, final_df_coords
+
