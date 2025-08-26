@@ -2,8 +2,13 @@ import pandas as pd
 import numpy as np
 import os
 from datetime import datetime, timedelta
-from tqdm import tqdm  # <-- New import for the progress bar
+from tqdm import tqdm
+from sklearn.cluster import DBSCAN
+from geopy.distance import geodesic
 
+
+# Install with: pip install scikit-learn geopy
+# You will need to install these new dependencies for the new code to work.
 
 def find_thermals_in_file(file_path, time_window, distance_threshold, altitude_change_threshold):
     """
@@ -93,11 +98,8 @@ def find_thermals_in_file(file_path, time_window, distance_threshold, altitude_c
                 thermals.append({
                     'file_name': os.path.basename(file_path),
                     'start_time': start_point['time'],
-                    'end_time': end_point['time'],
                     'start_lat': start_point['latitude'],
                     'start_lon': start_point['longitude'],
-                    'end_lat': end_point['latitude'],
-                    'end_lon': end_point['longitude'],
                     'altitude_change': altitude_change,
                     'duration_s': time_diff,
                     'avg_climb_rate_mps': altitude_change / time_diff if time_diff > 0 else 0
@@ -147,7 +149,7 @@ def get_thermals_as_dataframe(igc_folder, time_window, distance_threshold, altit
 def consolidate_thermals(df, min_climb_rate, radius_km):
     """
     Filters and groups thermals to find the strongest ones in a given radius.
-    A progress bar is shown during the consolidation process.
+    This version uses DBSCAN for vastly improved performance.
 
     Args:
         df (pandas.DataFrame): The DataFrame of thermals.
@@ -166,55 +168,43 @@ def consolidate_thermals(df, min_climb_rate, radius_km):
     filtered_df = df[df['avg_climb_rate_mps'] >= min_climb_rate].copy()
 
     if filtered_df.empty:
+        print("No thermals met the minimum climb rate threshold. Returning empty DataFrames.")
         return pd.DataFrame(), pd.DataFrame()
 
-    # Convert radius_km to meters
-    radius_m = radius_km * 1000
+    # Prepare data for DBSCAN
+    coords = filtered_df[['start_lat', 'start_lon']].to_numpy()
 
-    # Group nearby thermals (simplified clustering logic)
-    consolidated_groups = []
+    # Use geodesic distance in meters for DBSCAN, which is much more accurate
+    # than Euclidean distance on lat/lon coordinates.
+    db = DBSCAN(eps=radius_km / 6371, min_samples=2, metric='haversine').fit(np.radians(coords))
+    labels = db.labels_
 
-    # Use a progress bar for the consolidation loop
-    with tqdm(total=len(filtered_df), desc="Consolidating Thermals") as pbar:
-        while not filtered_df.empty:
-            # Pick the first thermal as the cluster center
-            center_thermal = filtered_df.iloc[0]
+    # Create a new DataFrame with cluster labels
+    clustered_df = filtered_df.copy()
+    clustered_df['cluster'] = labels
 
-            # Find all thermals within the radius of the center
-            lat1, lon1 = np.radians(center_thermal['start_lat']), np.radians(center_thermal['start_lon'])
-            dists = []
-            for _, row in filtered_df.iterrows():
-                lat2, lon2 = np.radians(row['start_lat']), np.radians(row['start_lon'])
-                dlon = lon2 - lon1
-                dlat = lat2 - lat1
-                a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
-                c = 2 * np.arcsin(np.sqrt(a))
-                R = 6371000
-                distance = R * c
-                dists.append(distance)
+    # Remove noise points (labeled as -1 by DBSCAN)
+    clustered_df = clustered_df[clustered_df['cluster'] != -1]
 
-            nearby_indices = [i for i, d in enumerate(dists) if d <= radius_m]
-            nearby_thermals = filtered_df.iloc[nearby_indices]
+    if clustered_df.empty:
+        print("DBSCAN found no valid clusters. Returning empty DataFrames.")
+        return pd.DataFrame(), pd.DataFrame()
 
-            # Consolidate the group
-            consolidated_group = {
-                'latitude': nearby_thermals['start_lat'].mean(),
-                'longitude': nearby_thermals['start_lon'].mean(),
-                'avg_climb_rate_mps': nearby_thermals['avg_climb_rate_mps'].mean(),
-                'count': len(nearby_thermals)
-            }
-            consolidated_groups.append(consolidated_group)
-
-            # Update the progress bar by the number of thermals removed
-            pbar.update(len(nearby_thermals))
-
-            # Remove the thermals in this group from the DataFrame
-            filtered_df = filtered_df.drop(nearby_thermals.index).reset_index(drop=True)
-
-    consolidated_df = pd.DataFrame(consolidated_groups)
+    # Group by cluster and calculate consolidated thermal properties
+    consolidated_df = clustered_df.groupby('cluster').agg(
+        latitude=('start_lat', 'mean'),
+        longitude=('start_lon', 'mean'),
+        avg_climb_rate_mps=('avg_climb_rate_mps', 'mean'),
+        count=('file_name', 'count')
+    ).reset_index()
 
     # Create the coordinates DataFrame for plotting
     coords_df = consolidated_df[['latitude', 'longitude', 'count']].copy()
     coords_df.rename(columns={'count': 'strength'}, inplace=True)
+
+    # Print a summary of the clustering results
+    n_clusters = len(consolidated_df)
+    n_noise = len(df) - len(clustered_df)
+    print(f"DBSCAN found {n_clusters} clusters and {n_noise} noise points.")
 
     return consolidated_df, coords_df
