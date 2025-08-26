@@ -12,7 +12,7 @@ import math
 #    path. Then, for each thermal, it checks if the distance from the start to the
 #    thermal plus the distance from the thermal to the end is approximately equal
 #    to the total path distance. If this is true, the thermal must lie very close
-#    to the straight line defined by the flight path.
+#    to the straight line defined by the flight path. uses math.isclose with TOLERANCE_KM
 #
 # 2. The "In the Cone" Check: It then calculates the bearing (direction) from the
 #    start point to the end point. It compares this with the bearing from the
@@ -33,6 +33,8 @@ import math
 START_LAT, START_LON = -31.66, 117.24
 END_LAT, END_LON = -30.596, 116.772
 CONE_ANGLE_DEG = 20  # The cone angle in degrees (20 degrees either side of the path)
+# Use a small tolerance for floating point comparisons
+TOLERANCE_KM = 2
 
 # File names for input and output
 INPUT_FILE = 'consolidated_thermal_coords.csv'
@@ -94,8 +96,7 @@ def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_
     Returns:
         True if the thermal is in the cone, False otherwise.
     """
-    # Use a small tolerance for floating point comparisons
-    TOLERANCE_KM = 0.5
+
 
     # Calculate the total distance of the flight path.
     total_distance = haversine_distance(start_lat, start_lon, end_lat, end_lon)
