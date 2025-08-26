@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 from datetime import datetime, timedelta
+from tqdm import tqdm  # <-- New import for the progress bar
 
 
 def find_thermals_in_file(file_path, time_window, distance_threshold, altitude_change_threshold):
@@ -25,7 +26,7 @@ def find_thermals_in_file(file_path, time_window, distance_threshold, altitude_c
         with open(file_path, 'r') as f:
             lines = f.readlines()
     except Exception as e:
-        print(f"Error reading {file_path}: {e}")
+        # print(f"Error reading {file_path}: {e}")
         return thermals
 
     points = []
@@ -95,7 +96,7 @@ def find_thermals_in_file(file_path, time_window, distance_threshold, altitude_c
                     'end_time': end_point['time'],
                     'start_lat': start_point['latitude'],
                     'start_lon': start_point['longitude'],
-                    'end_lat': end_point['latitude'],
+                    'end_lat': end_point['longitude'],
                     'end_lon': end_point['longitude'],
                     'altitude_change': altitude_change,
                     'duration_s': time_diff,
@@ -108,7 +109,7 @@ def find_thermals_in_file(file_path, time_window, distance_threshold, altitude_c
 def get_thermals_as_dataframe(igc_folder, time_window, distance_threshold, altitude_change_threshold):
     """
     Reads all IGC files in a folder, finds thermals in each, and consolidates the
-    results into a single pandas DataFrame.
+    results into a single pandas DataFrame. A progress bar is shown.
 
     Args:
         igc_folder (str): The path to the folder containing IGC files.
@@ -133,7 +134,8 @@ def get_thermals_as_dataframe(igc_folder, time_window, distance_threshold, altit
 
     print(f"Found {len(igc_files)} IGC files to process.")
 
-    for file_name in igc_files:
+    # Use tqdm to create a progress bar for the file loop
+    for file_name in tqdm(igc_files, desc="Processing IGC files"):
         file_path = os.path.join(igc_folder, file_name)
         # Pass the parameters directly to the worker function
         file_thermals = find_thermals_in_file(file_path, time_window, distance_threshold, altitude_change_threshold)
