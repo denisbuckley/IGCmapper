@@ -1,9 +1,35 @@
 import csv
 import math
 
+#
+# This script reads thermal data from a CSV file, filters the points that
+# lie within a defined cone along a flight path, and exports the filtered
+# data to a new CSV file.
+#
+# The code's logic works in two stages:
+#
+# 1. The "On the Line" Check: It first calculates the total distance of the flight
+#    path. Then, for each thermal, it checks if the distance from the start to the
+#    thermal plus the distance from the thermal to the end is approximately equal
+#    to the total path distance. If this is true, the thermal must lie very close
+#    to the straight line defined by the flight path.
+#
+# 2. The "In the Cone" Check: It then calculates the bearing (direction) from the
+#    start point to the end point. It compares this with the bearing from the
+#    start point to the thermal. If the difference between these two bearings is
+#    less than the CONE_ANGLE_DEG, the thermal is considered to be within the
+#    desired sector.
+#
+# By combining these two checks, the script efficiently and accurately filters for thermals
+# that are both on the flight path and within the specified cone.
+#
+# Required libraries: none beyond standard Python.
+
+
 # --- Configuration ---
 # Define the flight path start and end points in (latitude, longitude)
 # Coordinates are in decimal degrees.
+
 START_LAT, START_LON = -31.66, 117.24
 END_LAT, END_LON = -30.596, 116.772
 CONE_ANGLE_DEG = 20  # The cone angle in degrees (20 degrees either side of the path)
