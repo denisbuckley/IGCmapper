@@ -1,8 +1,9 @@
 #
-# This script reads IGC files from a specified folder, uses functions from
-# the functions_holder module to process the data, and returns consolidated
-# DataFrames for easy export and analysis. This version is interactive and
-# prompts the user for analysis parameters, providing default values.
+# This script reads consolidated thermal coordinates from a CSV file and filters
+# them to find only those that lie within a specific angular sector.
+#
+# The sector is defined by a start waypoint, an end waypoint, and a
+# user-specified angle (default is 30 degrees either side of the heading).
 #
 # Required libraries: pandas, numpy
 # Make sure your functions_holder.py script is in the same directory.
@@ -10,84 +11,132 @@
 # Install with: pip install pandas numpy
 #
 
-import os
 import pandas as pd
 import numpy as np
-from functions_holder import get_thermals_as_dataframe, consolidate_thermals
+import math
+import os
+from functions_holder import haversine_distance
+
+
+def calculate_bearing(lat1, lon1, lat2, lon2):
+    """
+    Calculates the initial bearing from point 1 to point 2.
+    The bearing is the angle in degrees clockwise from North.
+
+    Args:
+        lat1, lon1 (float): Latitude and longitude of the starting point.
+        lat2, lon2 (float): Latitude and longitude of the destination point.
+
+    Returns:
+        float: The bearing in degrees.
+    """
+    # Convert latitude and longitude to radians
+    lat1_rad = math.radians(lat1)
+    lon1_rad = math.radians(lon1)
+    lat2_rad = math.radians(lat2)
+    lon2_rad = math.radians(lon2)
+
+    # Calculate the difference in longitudes
+    delta_lon = lon2_rad - lon1_rad
+
+    # Calculate the bearing
+    y = math.sin(delta_lon) * math.cos(lat2_rad)
+    x = math.cos(lat1_rad) * math.sin(lat2_rad) - \
+        math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(delta_lon)
+
+    initial_bearing = math.atan2(y, x)
+
+    # Convert the bearing from radians to degrees and normalize to 0-360
+    initial_bearing = math.degrees(initial_bearing)
+    final_bearing = (initial_bearing + 360) % 360
+
+    return final_bearing
+
 
 if __name__ == "__main__":
-    # --- User-configurable parameters with default values ---
-    # Define the default values here.
-    default_igc_folder = "./igc"
-    default_time_window = 10
-    default_distance_threshold = 100
-    default_altitude_change_threshold = 20
-    default_min_climb_rate = 0.5
-    default_radius_km = 1.0
+    # --- User-configurable file and parameters ---
+    thermal_file = "consolidated_thermal_coords.csv"
+    sector_angle = 30  # degrees on either side of the heading
 
-    # Get input from the user, using defaults if they just press Enter.
-    try:
-        # Folder path
-        igc_folder_input = input(
-            f"Please enter the path to the folder with IGC files (default: {default_igc_folder}): ")
-        igc_folder = igc_folder_input if igc_folder_input else default_igc_folder
-
-        # Heuristic parameters for identifying a thermal
-        time_window_input = input(
-            f"Enter time window for thermal detection in seconds (default: {default_time_window}): ")
-        time_window = int(time_window_input) if time_window_input else default_time_window
-
-        distance_threshold_input = input(
-            f"Enter max distance traveled in meters (default: {default_distance_threshold}): ")
-        distance_threshold = int(distance_threshold_input) if distance_threshold_input else default_distance_threshold
-
-        altitude_change_threshold_input = input(
-            f"Enter min altitude gain in meters (default: {default_altitude_change_threshold}): ")
-        altitude_change_threshold = int(
-            altitude_change_threshold_input) if altitude_change_threshold_input else default_altitude_change_threshold
-
-        # Parameters for consolidating thermals
-        min_climb_rate_input = input(
-            f"Enter min climb rate in m/s to filter thermals (default: {default_min_climb_rate}): ")
-        min_climb_rate = float(min_climb_rate_input) if min_climb_rate_input else default_min_climb_rate
-
-        radius_km_input = input(f"Enter radius in km to consolidate thermals (default: {default_radius_km}): ")
-        radius_km = float(radius_km_input) if radius_km_input else default_radius_km
-
-    except ValueError:
-        print("\nInvalid input. Please enter a number for the numeric parameters. Exiting.")
+    # Check if the thermal data file exists
+    if not os.path.exists(thermal_file):
+        print(f"Error: The file '{thermal_file}' was not found. Please run the thermal-data-extractor.py script first.")
         exit()
 
-    print("\nRunning thermal data analysis with the following parameters:")
-    print(f"IGC Folder: {igc_folder}")
+    # Get the waypoints from the user
+    try:
+        start_lat = float(input("Enter starting waypoint latitude: "))
+        start_lon = float(input("Enter starting waypoint longitude: "))
+        end_lat = float(input("Enter ending waypoint latitude: "))
+        end_lon = float(input("Enter ending waypoint longitude: "))
+    except ValueError:
+        print("\nInvalid input. Please enter valid numbers for the coordinates. Exiting.")
+        exit()
+
+    # Load the thermal data
+    try:
+        thermal_df = pd.read_csv(thermal_file)
+        if thermal_df.empty:
+            print(f"The file '{thermal_file}' is empty. No thermals to analyze.")
+            exit()
+    except Exception as e:
+        print(f"An error occurred while reading the CSV file: {e}")
+        exit()
+
+    # Calculate the target heading (bearing) of the flight path
+    target_heading = calculate_bearing(start_lat, start_lon, end_lat, end_lon)
+    print(f"\nTarget heading from start to end waypoint: {target_heading:.2f} degrees")
+
+    # Calculate the lower and upper bounds of the sector
+    lower_bound = (target_heading - sector_angle + 360) % 360
+    upper_bound = (target_heading + sector_angle) % 360
+
     print(
-        f"Thermal Detection: Time Window = {time_window}s, Distance Threshold = {distance_threshold}m, Altitude Gain = {altitude_change_threshold}m")
-    print(f"Consolidation: Min Climb Rate = {min_climb_rate} m/s, Radius = {radius_km} km")
+        f"Filtering thermals within a {sector_angle * 2}-degree sector ({lower_bound:.2f} to {upper_bound:.2f} degrees).")
 
-    # Step 1: Get the raw thermal data as a DataFrame
-    thermal_df = get_thermals_as_dataframe(igc_folder, time_window, distance_threshold, altitude_change_threshold)
-    print(f"Initial raw thermal count: {len(thermal_df)}")
+    # Calculate the bearing from the starting point to each thermal
+    thermal_df['bearing_to_thermal'] = thermal_df.apply(
+        lambda row: calculate_bearing(
+            start_lat, start_lon,
+            row['latitude'], row['longitude']
+        ),
+        axis=1
+    )
 
-    # Step 2: Consolidate the thermals based on the user-defined logic
-    consolidated_df, coords_df = consolidate_thermals(thermal_df, min_climb_rate, radius_km)
-    print(f"Consolidated thermal count after filtering and grouping: {len(consolidated_df)}")
-
-    # Check if the final DataFrame is empty before attempting to print/save
-    if not consolidated_df.empty:
-        print("\n--- Consolidated Thermal Data DataFrame (with strength) ---")
-        print(consolidated_df)
-
-        print("\n--- Consolidated Thermal Coordinates DataFrame (without strength) ---")
-        print(coords_df)
-
-        # You can save the DataFrames to CSV files for use in Google Earth or other tools
-        output_csv_with_strength = "consolidated_thermal_data.csv"
-        consolidated_df.to_csv(output_csv_with_strength, index=False)
-        print(f"\nDataFrame with strength saved to '{output_csv_with_strength}'")
-
-        output_csv_coords = "consolidated_thermal_coords.csv"
-        coords_df.to_csv(output_csv_coords, index=False)
-        print(f"DataFrame with only coordinates saved to '{output_csv_coords}'")
+    # Filter the thermals
+    if lower_bound <= upper_bound:
+        # Simple case: the sector does not cross the 0/360 boundary
+        filtered_thermals = thermal_df[
+            (thermal_df['bearing_to_thermal'] >= lower_bound) &
+            (thermal_df['bearing_to_thermal'] <= upper_bound)
+            ]
     else:
-        print("\nNo thermals were found that met all the specified criteria. Please try adjusting your parameters.")
+        # Complex case: the sector crosses the 0/360 boundary (e.g., 340 to 20)
+        filtered_thermals = thermal_df[
+            (thermal_df['bearing_to_thermal'] >= lower_bound) |
+            (thermal_df['bearing_to_thermal'] <= upper_bound)
+            ]
 
+    # Display results
+    print(f"\nFound {len(filtered_thermals)} thermals within the specified sector.")
+
+    if not filtered_thermals.empty:
+        # Sort by distance from the start point for easier viewing
+        filtered_thermals['distance_from_start_km'] = filtered_thermals.apply(
+            lambda row: haversine_distance(
+                start_lat, start_lon,
+                row['latitude'], row['longitude']
+            ) / 1000,
+            axis=1
+        )
+        filtered_thermals = filtered_thermals.sort_values(by='distance_from_start_km')
+
+        print("\n--- Filtered Thermals ---")
+        print(filtered_thermals[['latitude', 'longitude', 'distance_from_start_km', 'bearing_to_thermal']])
+
+        # Save the results to a new CSV file
+        output_file = "filtered_thermals_in_sector.csv"
+        filtered_thermals.to_csv(output_file, index=False)
+        print(f"\nFiltered thermals saved to '{output_file}'")
+    else:
+        print("No thermals were found that meet the criteria.")
