@@ -1,13 +1,15 @@
 #
-# This script contains the core functions for parsing IGC files and identifying
-# thermals. It is intended to be imported by other scripts, such as the main
-# analysis script.
+# This script contains the core functions for parsing IGC files, identifying
+# thermals, and processing them into a pandas DataFrame.
 #
-# It has been created by moving functions from the original thermal_mapper.py.
+# Required libraries: pandas, numpy
 #
-# Required libraries: numpy
+# Install with: pip install pandas numpy
 #
+
+import os
 import math
+import pandas as pd
 import numpy as np
 
 # --- User-configurable variables ---
@@ -15,9 +17,6 @@ import numpy as np
 time_window = 10  # seconds to check for sustained climb and confined area
 distance_threshold = 100  # meters, max distance traveled in the time window
 altitude_change_threshold = 20  # meters
-
-# Threshold for identifying a significant, continuous climb for the plot.
-significant_climb_threshold = 200  # meters
 
 
 def igc_to_decimal_degrees(igc_coord):
@@ -178,3 +177,131 @@ def find_thermals_in_file(filepath):
     except Exception as e:
         print(f"An unexpected error occurred while processing {filepath}: {e}")
         return [], 0, 0
+
+
+def get_thermals_as_dataframe(folder_path):
+    """
+    Analyzes IGC files in a folder and returns a pandas DataFrame with
+    the start and end coordinates, and climb rate of each thermal found.
+
+    Args:
+        folder_path (str): The path to the folder containing IGC files.
+
+    Returns:
+        pandas.DataFrame: A DataFrame with columns for thermal data.
+                          Returns an empty DataFrame if no thermals are found.
+    """
+    # Check if the folder exists and contains IGC files
+    if not os.path.isdir(folder_path):
+        print(f"Error: The folder '{folder_path}' does not exist.")
+        return pd.DataFrame()
+
+    igc_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.lower().endswith('.igc')]
+
+    if not igc_files:
+        print(f"No IGC files found in the folder: {folder_path}.")
+        return pd.DataFrame()
+
+    all_thermal_data = []
+    print("Extracting thermal data from IGC files...")
+
+    # Iterate through each IGC file and extract thermal data
+    for filename in igc_files:
+        thermals, _, _ = find_thermals_in_file(filename)
+
+        # Append the data of each thermal to the list
+        for thermal in thermals:
+            # We are extracting the start and end coordinates of each thermal
+            thermal_point_data = {
+                'thermal_start_lat': thermal['start_location'][0],
+                'thermal_start_lon': thermal['start_location'][1],
+                'thermal_end_lat': thermal['end_location'][0],
+                'thermal_end_lon': thermal['end_location'][1],
+                'climb_rate_m_per_s': thermal['climb_rate'],
+                'altitude_gain_m': thermal['altitude_gain'],
+                'file_name': os.path.basename(filename)
+            }
+            all_thermal_data.append(thermal_point_data)
+
+    # Create the pandas DataFrame from the collected data
+    df = pd.DataFrame(all_thermal_data)
+
+    if not df.empty:
+        print(f"Successfully extracted data for {len(df)} thermals.")
+    else:
+        print("No thermals were identified in the provided files.")
+
+    return df
+
+
+def consolidate_thermals(df, min_climb_rate=0.5, radius_km=2):
+    """
+    Filters a DataFrame of thermals and consolidates those that are within
+    a specified radius, keeping only the strongest thermal in each cluster.
+
+    Args:
+        df (pd.DataFrame): DataFrame of thermal data.
+        min_climb_rate (float): Minimum climb rate in m/s to be considered.
+        radius_km (int): Radius in kilometers for clustering.
+
+    Returns:
+        tuple: A tuple containing two pandas DataFrames:
+               1. A DataFrame with consolidated thermals including strength.
+               2. A DataFrame with only the latitude and longitude of the consolidated thermals.
+    """
+    if df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Step 1: Filter out thermals below the minimum climb rate
+    filtered_df = df[df['climb_rate_m_per_s'] > min_climb_rate].copy()
+    if filtered_df.empty:
+        print(f"No thermals found with a climb rate greater than {min_climb_rate} m/s.")
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Sort the DataFrame by climb rate in descending order to prioritize strongest thermals
+    filtered_df = filtered_df.sort_values(by='climb_rate_m_per_s', ascending=False).reset_index(drop=True)
+
+    consolidated_thermals = []
+
+    # Step 2: Iteratively consolidate thermals
+    while not filtered_df.empty:
+        # The first thermal in the sorted list is the strongest one remaining
+        strongest_thermal = filtered_df.iloc[0]
+
+        # Add this strongest thermal to our final list
+        consolidated_thermals.append(strongest_thermal)
+
+        # Create a boolean mask to identify thermals within the consolidation radius
+        strongest_lat = strongest_thermal['thermal_start_lat']
+        strongest_lon = strongest_thermal['thermal_start_lon']
+
+        distances = filtered_df.apply(
+            lambda row: haversine_distance(
+                strongest_lat, strongest_lon,
+                row['thermal_start_lat'], row['thermal_start_lon']
+            ) / 1000,  # Convert to km
+            axis=1
+        )
+
+        # Mark all thermals in the cluster for removal
+        thermals_to_remove_indices = filtered_df[distances <= radius_km].index
+
+        # Remove the thermals in the cluster from the DataFrame for the next iteration
+        filtered_df = filtered_df.drop(thermals_to_remove_indices).reset_index(drop=True)
+
+    final_df_with_strength = pd.DataFrame(consolidated_thermals).reset_index(drop=True)
+
+    # Filter and rename the columns for the DataFrame with strength
+    final_df_with_strength = final_df_with_strength[
+        ['thermal_start_lat', 'thermal_start_lon', 'climb_rate_m_per_s']].copy()
+    final_df_with_strength = final_df_with_strength.rename(columns={
+        'thermal_start_lat': 'latitude',
+        'thermal_start_lon': 'longitude',
+        'climb_rate_m_per_s': 'strength_m_per_s'
+    })
+
+    # Create the second DataFrame with only coordinates
+    final_df_coords = final_df_with_strength[['latitude', 'longitude']].copy()
+
+    print(f"Consolidated {len(df)} thermals into {len(final_df_with_strength)} events.")
+    return final_df_with_strength, final_df_coords
