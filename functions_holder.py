@@ -96,7 +96,7 @@ def find_thermals_in_file(file_path, time_window, distance_threshold, altitude_c
                     'end_time': end_point['time'],
                     'start_lat': start_point['latitude'],
                     'start_lon': start_point['longitude'],
-                    'end_lat': end_point['longitude'],
+                    'end_lat': end_point['latitude'],
                     'end_lon': end_point['longitude'],
                     'altitude_change': altitude_change,
                     'duration_s': time_diff,
@@ -147,6 +147,7 @@ def get_thermals_as_dataframe(igc_folder, time_window, distance_threshold, altit
 def consolidate_thermals(df, min_climb_rate, radius_km):
     """
     Filters and groups thermals to find the strongest ones in a given radius.
+    A progress bar is shown during the consolidation process.
 
     Args:
         df (pandas.DataFrame): The DataFrame of thermals.
@@ -172,37 +173,43 @@ def consolidate_thermals(df, min_climb_rate, radius_km):
 
     # Group nearby thermals (simplified clustering logic)
     consolidated_groups = []
-    while not filtered_df.empty:
-        # Pick the first thermal as the cluster center
-        center_thermal = filtered_df.iloc[0]
 
-        # Find all thermals within the radius of the center
-        lat1, lon1 = np.radians(center_thermal['start_lat']), np.radians(center_thermal['start_lon'])
-        dists = []
-        for _, row in filtered_df.iterrows():
-            lat2, lon2 = np.radians(row['start_lat']), np.radians(row['start_lon'])
-            dlon = lon2 - lon1
-            dlat = lat2 - lat1
-            a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
-            c = 2 * np.arcsin(np.sqrt(a))
-            R = 6371000
-            distance = R * c
-            dists.append(distance)
+    # Use a progress bar for the consolidation loop
+    with tqdm(total=len(filtered_df), desc="Consolidating Thermals") as pbar:
+        while not filtered_df.empty:
+            # Pick the first thermal as the cluster center
+            center_thermal = filtered_df.iloc[0]
 
-        nearby_indices = [i for i, d in enumerate(dists) if d <= radius_m]
-        nearby_thermals = filtered_df.iloc[nearby_indices]
+            # Find all thermals within the radius of the center
+            lat1, lon1 = np.radians(center_thermal['start_lat']), np.radians(center_thermal['start_lon'])
+            dists = []
+            for _, row in filtered_df.iterrows():
+                lat2, lon2 = np.radians(row['start_lat']), np.radians(row['start_lon'])
+                dlon = lon2 - lon1
+                dlat = lat2 - lat1
+                a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+                c = 2 * np.arcsin(np.sqrt(a))
+                R = 6371000
+                distance = R * c
+                dists.append(distance)
 
-        # Consolidate the group
-        consolidated_group = {
-            'latitude': nearby_thermals['start_lat'].mean(),
-            'longitude': nearby_thermals['start_lon'].mean(),
-            'avg_climb_rate_mps': nearby_thermals['avg_climb_rate_mps'].mean(),
-            'count': len(nearby_thermals)
-        }
-        consolidated_groups.append(consolidated_group)
+            nearby_indices = [i for i, d in enumerate(dists) if d <= radius_m]
+            nearby_thermals = filtered_df.iloc[nearby_indices]
 
-        # Remove the thermals in this group from the DataFrame
-        filtered_df = filtered_df.drop(nearby_thermals.index).reset_index(drop=True)
+            # Consolidate the group
+            consolidated_group = {
+                'latitude': nearby_thermals['start_lat'].mean(),
+                'longitude': nearby_thermals['start_lon'].mean(),
+                'avg_climb_rate_mps': nearby_thermals['avg_climb_rate_mps'].mean(),
+                'count': len(nearby_thermals)
+            }
+            consolidated_groups.append(consolidated_group)
+
+            # Update the progress bar by the number of thermals removed
+            pbar.update(len(nearby_thermals))
+
+            # Remove the thermals in this group from the DataFrame
+            filtered_df = filtered_df.drop(nearby_thermals.index).reset_index(drop=True)
 
     consolidated_df = pd.DataFrame(consolidated_groups)
 
