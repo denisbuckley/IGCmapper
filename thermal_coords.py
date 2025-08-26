@@ -65,6 +65,7 @@ if __name__ == "__main__":
     print(f"Consolidation: Min Climb Rate = {min_climb_rate} m/s, Radius = {radius_km} km")
 
     # Step 1: Get the raw thermal data as a DataFrame
+    # Now passing the user-defined parameters to the function
     thermal_df = get_thermals_as_dataframe(igc_folder, time_window, distance_threshold, altitude_change_threshold)
     print(f"Initial raw thermal count: {len(thermal_df)}")
 
@@ -90,4 +91,3 @@ if __name__ == "__main__":
         print(f"DataFrame with only coordinates saved to '{output_csv_coords}'")
     else:
         print("\nNo thermals were found that met all the specified criteria. Please try adjusting your parameters.")
-
