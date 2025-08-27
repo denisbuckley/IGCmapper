@@ -4,8 +4,9 @@ import math
 #
 # This script reads thermal data from a CSV file, filters the points that
 # lie within a defined cone along a flight path, and exports the filtered
-# data to a new CSV file. The start and end points of the flight path are
+# data to a new CSV, CUP, and KML file. The start and end points of the flight path are
 # now chosen by the user from a list of waypoints read from a .cup file.
+# The user is also prompted to enter values for the cone angle and tolerance.
 #
 # The code's logic works in two stages:
 #
@@ -28,13 +29,12 @@ import math
 
 
 # --- Configuration ---
-# Define the cone angle and tolerance for the distance check.
-CONE_ANGLE_DEG = 30  # The cone angle in degrees (20 degrees either side of the path)
-TOLERANCE_KM = 5
 # File names for input and output
 WAYPOINT_FILE = 'gcwa extended.cup'
 INPUT_FILE = 'consolidated_thermal_coords.csv'
-OUTPUT_FILE = 'filtered_thermals.csv'
+OUTPUT_CSV_FILE = 'filtered_thermals.csv'
+OUTPUT_CUP_FILE = 'filtered_thermals.cup'
+OUTPUT_KML_FILE = 'filtered_thermals.kml'
 
 
 # --- Geospatial Calculation Functions ---
@@ -81,7 +81,7 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
     return (bearing_deg + 360) % 360
 
 
-def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_lon, cone_angle_deg):
+def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_lon, cone_angle_deg, tolerance_km):
     """
     Determines if a thermal point is within the defined cone.
     Args:
@@ -89,6 +89,7 @@ def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_
         start_lat, start_lon: Coordinates of the start of the flight path.
         end_lat, end_lon: Coordinates of the end of the flight path.
         cone_angle_deg: The half-angle of the cone in degrees.
+        tolerance_km: The tolerance for the distance check in kilometers.
     Returns:
         True if the thermal is in the cone, False otherwise.
     """
@@ -101,7 +102,7 @@ def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_
 
     # Check if the thermal is approximately between the start and end points.
     # The sum of the two smaller distances should be close to the total distance.
-    if not math.isclose(dist_to_thermal + dist_thermal_to_end, total_distance, abs_tol=TOLERANCE_KM):
+    if not math.isclose(dist_to_thermal + dist_thermal_to_end, total_distance, abs_tol=tolerance_km):
         return False
 
     # Calculate the bearing from the start point to the end point (path bearing)
@@ -119,7 +120,7 @@ def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_
     return bearing_diff <= cone_angle_deg
 
 
-# --- Main Logic ---
+# --- File Handling Functions ---
 
 def parse_coords(coord_str):
     """
@@ -138,6 +139,27 @@ def parse_coords(coord_str):
     if direction in ['S', 'W']:
         return -decimal_degrees
     return decimal_degrees
+
+
+def convert_to_cup_coord(decimal_degrees, is_lat=True):
+    """
+    Converts a decimal degree coordinate to the CUP format (DDMM.MMM).
+    Args:
+        decimal_degrees: The coordinate in signed decimal degrees.
+        is_lat: True for latitude, False for longitude.
+    Returns:
+        The formatted coordinate string.
+    """
+    abs_degrees = abs(decimal_degrees)
+    degrees = int(abs_degrees)
+    minutes = (abs_degrees - degrees) * 60
+
+    if is_lat:
+        direction = 'S' if decimal_degrees < 0 else 'N'
+    else:
+        direction = 'W' if decimal_degrees < 0 else 'E'
+
+    return f"{degrees:02d}{minutes:.3f}{direction}"
 
 
 def read_waypoints_from_cup(file_path):
@@ -177,10 +199,134 @@ def read_waypoints_from_cup(file_path):
     return waypoints
 
 
+def get_float_input(prompt, default_value):
+    """
+    Prompts the user for a float value with error handling and a default option.
+    """
+    while True:
+        try:
+            user_input = input(f"{prompt} (default is {default_value}): ")
+            if user_input == "":
+                return default_value
+            return float(user_input)
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+
+
+def write_cup_file(csv_path, cup_path):
+    """
+    Reads the filtered CSV file and writes a .cup file with waypoints.
+    Args:
+        csv_path: Path to the input CSV file.
+        cup_path: Path to the output .cup file.
+    """
+    try:
+        with open(csv_path, mode='r', newline='') as infile:
+            reader = csv.reader(infile)
+            next(reader)  # Skip the header row
+
+            with open(cup_path, mode='w', newline='') as outfile:
+                writer = csv.writer(outfile)
+                # Write the standard CUP file header
+                writer.writerow(
+                    ['Title', 'Code', 'Country', 'Latitude', 'Longitude', 'Elevation', 'Style', 'Direction', 'Length',
+                     'Frequency', 'Description'])
+
+                rows_written = 0
+                for row in reader:
+                    try:
+                        # Parse thermal data from the CSV row
+                        lat, lon, strength = float(row[0]), float(row[1]), int(float(row[2]))
+
+                        # Create the waypoint name and code from the thermal strength
+                        wp_name = str(strength)
+                        wp_code = str(strength)
+
+                        # Convert coordinates to the CUP format
+                        cup_lat = convert_to_cup_coord(lat, is_lat=True)
+                        cup_lon = convert_to_cup_coord(lon, is_lat=False)
+
+                        # Write the new row to the .cup file
+                        writer.writerow([
+                            wp_name,  # Title
+                            wp_code,  # Code
+                            'AU',  # Country (defaulting to Australia)
+                            cup_lat,  # Latitude
+                            cup_lon,  # Longitude
+                            '0ft',  # Elevation (placeholder as it's not in the thermal data)
+                            '1',  # Style
+                            '',  # Direction
+                            '',  # Length
+                            '',  # Frequency
+                            'Filtered Thermal'  # Description
+                        ])
+                        rows_written += 1
+                    except (ValueError, IndexError) as e:
+                        print(f"Warning: Skipping malformed row in CSV '{row}'. Error: {e}")
+
+        print(f"\nSuccessfully wrote {rows_written} waypoints to '{cup_path}'.")
+
+    except FileNotFoundError:
+        print(f"Error: The file '{csv_path}' was not found. Cannot create CUP file.")
+    except Exception as e:
+        print(f"An unexpected error occurred while writing the CUP file: {e}")
+
+
+def write_kml_file(csv_path, kml_path):
+    """
+    Reads the filtered CSV file and writes a KML file with placemarks.
+    Args:
+        csv_path: Path to the input CSV file.
+        kml_path: Path to the output KML file.
+    """
+    try:
+        with open(csv_path, mode='r', newline='') as infile:
+            reader = csv.reader(infile)
+            next(reader)  # Skip the header row
+
+            with open(kml_path, mode='w', encoding='utf-8') as outfile:
+                # Write the KML header
+                outfile.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+                outfile.write('<kml xmlns="http://www.opengis.net/kml/2.2">\n')
+                outfile.write('<Document>\n')
+                outfile.write('    <name>Filtered Thermals</name>\n')
+
+                rows_written = 0
+                for row in reader:
+                    try:
+                        # Parse thermal data from the CSV row
+                        lat, lon, strength = float(row[0]), float(row[1]), int(float(row[2]))
+
+                        # Write the KML Placemark for the thermal
+                        outfile.write('    <Placemark>\n')
+                        outfile.write(f'        <name>{strength}</name>\n')
+                        outfile.write(f'        <description>Thermal strength: {strength}</description>\n')
+                        outfile.write('        <Point>\n')
+                        # KML coordinates are longitude, latitude, altitude
+                        outfile.write(f'            <coordinates>{lon},{lat},0</coordinates>\n')
+                        outfile.write('        </Point>\n')
+                        outfile.write('    </Placemark>\n')
+                        rows_written += 1
+                    except (ValueError, IndexError) as e:
+                        print(f"Warning: Skipping malformed row in CSV '{row}'. Error: {e}")
+
+                # Write the KML footer
+                outfile.write('</Document>\n')
+                outfile.write('</kml>\n')
+
+        print(f"\nSuccessfully wrote {rows_written} placemarks to '{kml_path}'.")
+
+    except FileNotFoundError:
+        print(f"Error: The file '{csv_path}' was not found. Cannot create KML file.")
+    except Exception as e:
+        print(f"An unexpected error occurred while writing the KML file: {e}")
+
+
 def main():
     """
-    Main function to read data, filter, and write to a new CSV file.
-    It now prompts the user to select waypoints for the flight path.
+    Main function to read data, filter, and write to new CSV and CUP files.
+    It now prompts the user to select waypoints for the flight path and
+    enter filter parameters.
     """
     # 1. Read waypoints from the .cup file
     print(f"Reading waypoints from '{WAYPOINT_FILE}'...")
@@ -191,7 +337,7 @@ def main():
     # 2. Present waypoints and get user input for start and end points
     print("\nAvailable Waypoints:")
     for i, wp in enumerate(waypoints):
-        print(f"[{i+1}] {wp['name']} ({wp['code']})")
+        print(f"[{i + 1}] {wp['name']} ({wp['code']})")
 
     def get_user_waypoint(prompt):
         while True:
@@ -210,37 +356,49 @@ def main():
     start_lat, start_lon = start_waypoint['lat'], start_waypoint['lon']
     end_lat, end_lon = end_waypoint['lat'], end_waypoint['lon']
 
+    # 3. Prompt user for cone angle and tolerance values
+    cone_angle = get_float_input("Enter the cone angle in degrees (e.g., 20): ", 30)
+    tolerance = get_float_input("Enter the distance tolerance in kilometers (e.g., 5): ", 5)
+
     print(f"\nFiltering thermals for a flight path from '{start_waypoint['name']}' to '{end_waypoint['name']}'...")
+    print(f"Using Cone Angle: {cone_angle} degrees, Tolerance: {tolerance} km")
     print(f"Start Coords: ({start_lat}, {start_lon})")
     print(f"End Coords: ({end_lat}, {end_lon})")
 
-    # 3. Read thermal data and apply the filter
+    # 4. Read thermal data and apply the filter, writing to the new CSV file
     print(f"\nReading thermal data from '{INPUT_FILE}'...")
     try:
+        filtered_rows = []
         with open(INPUT_FILE, mode='r', newline='') as infile:
             reader = csv.reader(infile)
             header = next(reader)  # Read the header row
 
-            with open(OUTPUT_FILE, mode='w', newline='') as outfile:
+            with open(OUTPUT_CSV_FILE, mode='w', newline='') as outfile:
                 writer = csv.writer(outfile)
-                writer.writerow(header)  # Write the header to the new file
+                writer.writerow(header)  # Write the header to the new CSV file
 
-                rows_filtered = 0
                 for row in reader:
                     try:
                         # Parse the data from the row
                         lat, lon, strength = float(row[0]), float(row[1]), float(row[2])
 
-                        # Apply the filter with the user-selected waypoints
-                        if is_within_cone(lat, lon, start_lat, start_lon, end_lat, end_lon, CONE_ANGLE_DEG):
-                            writer.writerow(row)  # Write the row to the new file if it passes
-                            rows_filtered += 1
+                        # Apply the filter with the user-selected waypoints and parameters
+                        if is_within_cone(lat, lon, start_lat, start_lon, end_lat, end_lon, cone_angle, tolerance):
+                            writer.writerow(row)  # Write the row to the new CSV file
+                            filtered_rows.append(row)
 
                     except (ValueError, IndexError) as e:
                         # Skip malformed rows but notify the user
                         print(f"Warning: Skipping malformed row '{row}'. Error: {e}")
 
-        print(f"\nFiltering complete. Wrote {rows_filtered} rows to '{OUTPUT_FILE}'.")
+        print(f"\nFiltering complete. Wrote {len(filtered_rows)} rows to '{OUTPUT_CSV_FILE}'.")
+
+        # 5. Write the CUP and KML files from the filtered CSV data
+        if len(filtered_rows) > 0:
+            write_cup_file(OUTPUT_CSV_FILE, OUTPUT_CUP_FILE)
+            write_kml_file(OUTPUT_CSV_FILE, OUTPUT_KML_FILE)
+        else:
+            print("No thermals were filtered. Skipping file generation.")
 
     except FileNotFoundError:
         print(f"Error: The file '{INPUT_FILE}' was not found.")
@@ -250,4 +408,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
