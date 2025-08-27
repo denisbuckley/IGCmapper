@@ -7,9 +7,17 @@
 # Required libraries: pandas, numpy
 # Make sure your functions_holder.py script is in the same directory.
 #
-# Install with: pip install pandas numpy
+# Time Window = 15s: The script analyzes data in a rolling time window. For a set of consecutive data points, if the duration of those points is within this time window (15 seconds in your example), it proceeds with the next checks. It's essentially looking for a sustained period of time where the other conditions are met.
 #
+# Distance Threshold = 100m: Within the defined time window, the script checks if the total distance traveled is less than or equal to this threshold. A short distance traveled over a period of time indicates that the glider is circling in one spot, which is a classic sign of a thermal.
+#
+# Altitude Gain = 20m: Within the time window, the script checks if the glider's altitude has increased by at least this amount. This is a crucial parameter, as a thermal is an area of rising air, so you would expect to gain altitude when flying through one.
+#
+# Once all the individual "thermals" are detected using the parameters above, these next two parameters are used to group and filter them. The goal is to combine multiple detected thermals that are actually the same thermal and to filter out any that aren't very useful for the glider pilot.
 
+# Min Climb Rate = 0.5 m/s: This parameter acts as a quality filter. The script calculates the average climb rate for each detected thermal. If the climb rate is below this threshold, the thermal is discarded from the final output. Gliders are constantly sinking, so a thermal that offers less than 0.5 m/s of lift might not be worth circling in.
+#
+# Radius = 2.0 km: This parameter is used to consolidate or group the thermals. The script looks for thermals that are located within this radius of each other. If it finds a cluster of thermals within a 2.0 km radius, it treats them all as a single, stronger thermal at a central location. This helps to clean up the data and prevents you from seeing multiple thermal markers for what was likely the same thermal that the glider circled a few times.
 import os
 import pandas as pd
 import numpy as np
@@ -91,3 +99,4 @@ if __name__ == "__main__":
         print(f"DataFrame with only coordinates saved to '{output_csv_coords}'")
     else:
         print("\nNo thermals were found that met all the specified criteria. Please try adjusting your parameters.")
+
