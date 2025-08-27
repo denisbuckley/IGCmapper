@@ -4,7 +4,7 @@ import math
 #
 # This script reads thermal data from a CSV file, filters the points that
 # lie within a defined cone along a flight path, and exports the filtered
-# data to a new CSV file. The start and end points of the flight path are
+# data to a new CSV, CUP, and KML file. The start and end points of the flight path are
 # now chosen by the user from a list of waypoints read from a .cup file.
 # The user is also prompted to enter values for the cone angle and tolerance.
 #
@@ -34,6 +34,7 @@ WAYPOINT_FILE = 'gcwa extended.cup'
 INPUT_FILE = 'consolidated_thermal_coords.csv'
 OUTPUT_CSV_FILE = 'filtered_thermals.csv'
 OUTPUT_CUP_FILE = 'filtered_thermals.cup'
+OUTPUT_KML_FILE = 'filtered_thermals.kml'
 
 
 # --- Geospatial Calculation Functions ---
@@ -119,7 +120,7 @@ def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_
     return bearing_diff <= cone_angle_deg
 
 
-# --- Main Logic ---
+# --- File Handling Functions ---
 
 def parse_coords(coord_str):
     """
@@ -271,6 +272,56 @@ def write_cup_file(csv_path, cup_path):
         print(f"An unexpected error occurred while writing the CUP file: {e}")
 
 
+def write_kml_file(csv_path, kml_path):
+    """
+    Reads the filtered CSV file and writes a KML file with placemarks.
+    Args:
+        csv_path: Path to the input CSV file.
+        kml_path: Path to the output KML file.
+    """
+    try:
+        with open(csv_path, mode='r', newline='') as infile:
+            reader = csv.reader(infile)
+            next(reader)  # Skip the header row
+
+            with open(kml_path, mode='w', encoding='utf-8') as outfile:
+                # Write the KML header
+                outfile.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+                outfile.write('<kml xmlns="http://www.opengis.net/kml/2.2">\n')
+                outfile.write('<Document>\n')
+                outfile.write('    <name>Filtered Thermals</name>\n')
+
+                rows_written = 0
+                for row in reader:
+                    try:
+                        # Parse thermal data from the CSV row
+                        lat, lon, strength = float(row[0]), float(row[1]), int(float(row[2]))
+
+                        # Write the KML Placemark for the thermal
+                        outfile.write('    <Placemark>\n')
+                        outfile.write(f'        <name>{strength}</name>\n')
+                        outfile.write(f'        <description>Thermal strength: {strength}</description>\n')
+                        outfile.write('        <Point>\n')
+                        # KML coordinates are longitude, latitude, altitude
+                        outfile.write(f'            <coordinates>{lon},{lat},0</coordinates>\n')
+                        outfile.write('        </Point>\n')
+                        outfile.write('    </Placemark>\n')
+                        rows_written += 1
+                    except (ValueError, IndexError) as e:
+                        print(f"Warning: Skipping malformed row in CSV '{row}'. Error: {e}")
+
+                # Write the KML footer
+                outfile.write('</Document>\n')
+                outfile.write('</kml>\n')
+
+        print(f"\nSuccessfully wrote {rows_written} placemarks to '{kml_path}'.")
+
+    except FileNotFoundError:
+        print(f"Error: The file '{csv_path}' was not found. Cannot create KML file.")
+    except Exception as e:
+        print(f"An unexpected error occurred while writing the KML file: {e}")
+
+
 def main():
     """
     Main function to read data, filter, and write to new CSV and CUP files.
@@ -317,15 +368,15 @@ def main():
     # 4. Read thermal data and apply the filter, writing to the new CSV file
     print(f"\nReading thermal data from '{INPUT_FILE}'...")
     try:
+        filtered_rows = []
         with open(INPUT_FILE, mode='r', newline='') as infile:
             reader = csv.reader(infile)
             header = next(reader)  # Read the header row
 
             with open(OUTPUT_CSV_FILE, mode='w', newline='') as outfile:
                 writer = csv.writer(outfile)
-                writer.writerow(header)  # Write the header to the new file
+                writer.writerow(header)  # Write the header to the new CSV file
 
-                filtered_rows = []
                 for row in reader:
                     try:
                         # Parse the data from the row
@@ -342,11 +393,12 @@ def main():
 
         print(f"\nFiltering complete. Wrote {len(filtered_rows)} rows to '{OUTPUT_CSV_FILE}'.")
 
-        # 5. Write the CUP file from the filtered CSV data
+        # 5. Write the CUP and KML files from the filtered CSV data
         if len(filtered_rows) > 0:
             write_cup_file(OUTPUT_CSV_FILE, OUTPUT_CUP_FILE)
+            write_kml_file(OUTPUT_CSV_FILE, OUTPUT_KML_FILE)
         else:
-            print("No thermals were filtered. Skipping CUP file generation.")
+            print("No thermals were filtered. Skipping file generation.")
 
     except FileNotFoundError:
         print(f"Error: The file '{INPUT_FILE}' was not found.")
