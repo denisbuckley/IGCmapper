@@ -32,7 +32,8 @@ import math
 # File names for input and output
 WAYPOINT_FILE = 'gcwa extended.cup'
 INPUT_FILE = 'consolidated_thermal_coords.csv'
-OUTPUT_FILE = 'filtered_thermals.csv'
+OUTPUT_CSV_FILE = 'filtered_thermals.csv'
+OUTPUT_CUP_FILE = 'filtered_thermals.cup'
 
 
 # --- Geospatial Calculation Functions ---
@@ -139,6 +140,27 @@ def parse_coords(coord_str):
     return decimal_degrees
 
 
+def convert_to_cup_coord(decimal_degrees, is_lat=True):
+    """
+    Converts a decimal degree coordinate to the CUP format (DDMM.MMM).
+    Args:
+        decimal_degrees: The coordinate in signed decimal degrees.
+        is_lat: True for latitude, False for longitude.
+    Returns:
+        The formatted coordinate string.
+    """
+    abs_degrees = abs(decimal_degrees)
+    degrees = int(abs_degrees)
+    minutes = (abs_degrees - degrees) * 60
+
+    if is_lat:
+        direction = 'S' if decimal_degrees < 0 else 'N'
+    else:
+        direction = 'W' if decimal_degrees < 0 else 'E'
+
+    return f"{degrees:02d}{minutes:.3f}{direction}"
+
+
 def read_waypoints_from_cup(file_path):
     """
     Reads waypoints from a .cup file and returns a list of dictionaries.
@@ -190,9 +212,68 @@ def get_float_input(prompt, default_value):
             print("Invalid input. Please enter a number.")
 
 
+def write_cup_file(csv_path, cup_path):
+    """
+    Reads the filtered CSV file and writes a .cup file with waypoints.
+    Args:
+        csv_path: Path to the input CSV file.
+        cup_path: Path to the output .cup file.
+    """
+    try:
+        with open(csv_path, mode='r', newline='') as infile:
+            reader = csv.reader(infile)
+            next(reader)  # Skip the header row
+
+            with open(cup_path, mode='w', newline='') as outfile:
+                writer = csv.writer(outfile)
+                # Write the standard CUP file header
+                writer.writerow(
+                    ['Title', 'Code', 'Country', 'Latitude', 'Longitude', 'Elevation', 'Style', 'Direction', 'Length',
+                     'Frequency', 'Description'])
+
+                rows_written = 0
+                for row in reader:
+                    try:
+                        # Parse thermal data from the CSV row
+                        lat, lon, strength = float(row[0]), float(row[1]), int(float(row[2]))
+
+                        # Create the waypoint name and code from the thermal strength
+                        wp_name = str(strength)
+                        wp_code = str(strength)
+
+                        # Convert coordinates to the CUP format
+                        cup_lat = convert_to_cup_coord(lat, is_lat=True)
+                        cup_lon = convert_to_cup_coord(lon, is_lat=False)
+
+                        # Write the new row to the .cup file
+                        writer.writerow([
+                            wp_name,  # Title
+                            wp_code,  # Code
+                            'AU',  # Country (defaulting to Australia)
+                            cup_lat,  # Latitude
+                            cup_lon,  # Longitude
+                            '0ft',  # Elevation (placeholder as it's not in the thermal data)
+                            '1',  # Style
+                            '',  # Direction
+                            '',  # Length
+                            '',  # Frequency
+                            'Filtered Thermal'  # Description
+                        ])
+                        rows_written += 1
+                    except (ValueError, IndexError) as e:
+                        print(f"Warning: Skipping malformed row in CSV '{row}'. Error: {e}")
+
+        print(f"\nSuccessfully wrote {rows_written} waypoints to '{cup_path}'.")
+
+    except FileNotFoundError:
+        print(f"Error: The file '{csv_path}' was not found. Cannot create CUP file.")
+    except Exception as e:
+        print(f"An unexpected error occurred while writing the CUP file: {e}")
+
+
 def main():
     """
-    Main function to read data, filter, and write to a new CSV file.
+    Main function to read data, filter, and write to new CSV and CUP files.
     It now prompts the user to select waypoints for the flight path and
     enter filter parameters.
     """
@@ -205,7 +286,7 @@ def main():
     # 2. Present waypoints and get user input for start and end points
     print("\nAvailable Waypoints:")
     for i, wp in enumerate(waypoints):
-        print(f"[{i+1}] {wp['name']} ({wp['code']})")
+        print(f"[{i + 1}] {wp['name']} ({wp['code']})")
 
     def get_user_waypoint(prompt):
         while True:
@@ -233,18 +314,18 @@ def main():
     print(f"Start Coords: ({start_lat}, {start_lon})")
     print(f"End Coords: ({end_lat}, {end_lon})")
 
-    # 4. Read thermal data and apply the filter
+    # 4. Read thermal data and apply the filter, writing to the new CSV file
     print(f"\nReading thermal data from '{INPUT_FILE}'...")
     try:
         with open(INPUT_FILE, mode='r', newline='') as infile:
             reader = csv.reader(infile)
             header = next(reader)  # Read the header row
 
-            with open(OUTPUT_FILE, mode='w', newline='') as outfile:
+            with open(OUTPUT_CSV_FILE, mode='w', newline='') as outfile:
                 writer = csv.writer(outfile)
                 writer.writerow(header)  # Write the header to the new file
 
-                rows_filtered = 0
+                filtered_rows = []
                 for row in reader:
                     try:
                         # Parse the data from the row
@@ -252,14 +333,20 @@ def main():
 
                         # Apply the filter with the user-selected waypoints and parameters
                         if is_within_cone(lat, lon, start_lat, start_lon, end_lat, end_lon, cone_angle, tolerance):
-                            writer.writerow(row)  # Write the row to the new file if it passes
-                            rows_filtered += 1
+                            writer.writerow(row)  # Write the row to the new CSV file
+                            filtered_rows.append(row)
 
                     except (ValueError, IndexError) as e:
                         # Skip malformed rows but notify the user
                         print(f"Warning: Skipping malformed row '{row}'. Error: {e}")
 
-        print(f"\nFiltering complete. Wrote {rows_filtered} rows to '{OUTPUT_FILE}'.")
+        print(f"\nFiltering complete. Wrote {len(filtered_rows)} rows to '{OUTPUT_CSV_FILE}'.")
+
+        # 5. Write the CUP file from the filtered CSV data
+        if len(filtered_rows) > 0:
+            write_cup_file(OUTPUT_CSV_FILE, OUTPUT_CUP_FILE)
+        else:
+            print("No thermals were filtered. Skipping CUP file generation.")
 
     except FileNotFoundError:
         print(f"Error: The file '{INPUT_FILE}' was not found.")
@@ -269,4 +356,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
