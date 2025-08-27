@@ -6,6 +6,7 @@ import math
 # lie within a defined cone along a flight path, and exports the filtered
 # data to a new CSV file. The start and end points of the flight path are
 # now chosen by the user from a list of waypoints read from a .cup file.
+# The user is also prompted to enter values for the cone angle and tolerance.
 #
 # The code's logic works in two stages:
 #
@@ -28,9 +29,6 @@ import math
 
 
 # --- Configuration ---
-# Define the cone angle and tolerance for the distance check.
-CONE_ANGLE_DEG = 30  # The cone angle in degrees (20 degrees either side of the path)
-TOLERANCE_KM = 5
 # File names for input and output
 WAYPOINT_FILE = 'gcwa extended.cup'
 INPUT_FILE = 'consolidated_thermal_coords.csv'
@@ -81,7 +79,7 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
     return (bearing_deg + 360) % 360
 
 
-def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_lon, cone_angle_deg):
+def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_lon, cone_angle_deg, tolerance_km):
     """
     Determines if a thermal point is within the defined cone.
     Args:
@@ -89,6 +87,7 @@ def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_
         start_lat, start_lon: Coordinates of the start of the flight path.
         end_lat, end_lon: Coordinates of the end of the flight path.
         cone_angle_deg: The half-angle of the cone in degrees.
+        tolerance_km: The tolerance for the distance check in kilometers.
     Returns:
         True if the thermal is in the cone, False otherwise.
     """
@@ -101,7 +100,7 @@ def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_
 
     # Check if the thermal is approximately between the start and end points.
     # The sum of the two smaller distances should be close to the total distance.
-    if not math.isclose(dist_to_thermal + dist_thermal_to_end, total_distance, abs_tol=TOLERANCE_KM):
+    if not math.isclose(dist_to_thermal + dist_thermal_to_end, total_distance, abs_tol=tolerance_km):
         return False
 
     # Calculate the bearing from the start point to the end point (path bearing)
@@ -177,10 +176,25 @@ def read_waypoints_from_cup(file_path):
     return waypoints
 
 
+def get_float_input(prompt, default_value):
+    """
+    Prompts the user for a float value with error handling and a default option.
+    """
+    while True:
+        try:
+            user_input = input(f"{prompt} (default is {default_value}): ")
+            if user_input == "":
+                return default_value
+            return float(user_input)
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+
+
 def main():
     """
     Main function to read data, filter, and write to a new CSV file.
-    It now prompts the user to select waypoints for the flight path.
+    It now prompts the user to select waypoints for the flight path and
+    enter filter parameters.
     """
     # 1. Read waypoints from the .cup file
     print(f"Reading waypoints from '{WAYPOINT_FILE}'...")
@@ -210,11 +224,16 @@ def main():
     start_lat, start_lon = start_waypoint['lat'], start_waypoint['lon']
     end_lat, end_lon = end_waypoint['lat'], end_waypoint['lon']
 
+    # 3. Prompt user for cone angle and tolerance values
+    cone_angle = get_float_input("Enter the cone angle in degrees (e.g., 20): ", 30)
+    tolerance = get_float_input("Enter the distance tolerance in kilometers (e.g., 5): ", 5)
+
     print(f"\nFiltering thermals for a flight path from '{start_waypoint['name']}' to '{end_waypoint['name']}'...")
+    print(f"Using Cone Angle: {cone_angle} degrees, Tolerance: {tolerance} km")
     print(f"Start Coords: ({start_lat}, {start_lon})")
     print(f"End Coords: ({end_lat}, {end_lon})")
 
-    # 3. Read thermal data and apply the filter
+    # 4. Read thermal data and apply the filter
     print(f"\nReading thermal data from '{INPUT_FILE}'...")
     try:
         with open(INPUT_FILE, mode='r', newline='') as infile:
@@ -231,8 +250,8 @@ def main():
                         # Parse the data from the row
                         lat, lon, strength = float(row[0]), float(row[1]), float(row[2])
 
-                        # Apply the filter with the user-selected waypoints
-                        if is_within_cone(lat, lon, start_lat, start_lon, end_lat, end_lon, CONE_ANGLE_DEG):
+                        # Apply the filter with the user-selected waypoints and parameters
+                        if is_within_cone(lat, lon, start_lat, start_lon, end_lat, end_lon, cone_angle, tolerance):
                             writer.writerow(row)  # Write the row to the new file if it passes
                             rows_filtered += 1
 

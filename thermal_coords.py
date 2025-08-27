@@ -7,10 +7,13 @@
 # Required libraries: pandas, numpy
 # Make sure your functions_holder.py script is in the same directory.
 #
-# Time Window = 15s: The script analyzes data in a rolling time window. For a set of consecutive data points, if the duration of those points is within this time window (15 seconds in your example), it proceeds with the next checks. It's essentially looking for a sustained period of time where the other conditions are met.
+# Time Window = 15s: The
+# script analyzes data in a rolling time window. For a set of consecutive data points, if the duration of those points is within this time window (15 seconds in your example), it proceeds with the next checks. It's essentially looking for a sustained period of time where the other conditions are met.
 #
 # Distance Threshold = 100m: Within the defined time window, the script checks if the total distance traveled is less than or equal to this threshold. A short distance traveled over a period of time indicates that the glider is circling in one spot, which is a classic sign of a thermal.
 #
+
+
 # Altitude Gain = 20m: Within the time window, the script checks if the glider's altitude has increased by at least this amount. This is a crucial parameter, as a thermal is an area of rising air, so you would expect to gain altitude when flying through one.
 #
 # Once all the individual "thermals" are detected using the parameters above, these next two parameters are used to group and filter them. The goal is to combine multiple detected thermals that are actually the same thermal and to filter out any that aren't very useful for the glider pilot.
