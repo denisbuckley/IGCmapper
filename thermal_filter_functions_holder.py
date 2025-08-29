@@ -7,7 +7,7 @@ import math
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     """
-    Calculates the distance between two points on the Earth using the Haversine formula.
+    Calculates the distance between two geographical points.
     Args:
         lat1, lon1: Coordinates of the first point in decimal degrees.
         lat2, lon2: Coordinates of the second point in decimal degrees.
@@ -28,7 +28,7 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 
 def calculate_bearing(lat1, lon1, lat2, lon2):
     """
-    Calculates the initial bearing between two points.
+    Determines the bearing (direction) from one point to another.
     Args:
         lat1, lon1: Coordinates of the first point in decimal degrees.
         lat2, lon2: Coordinates of the second point in decimal degrees.
@@ -49,7 +49,7 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
 
 def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_lon, cone_angle_deg, tolerance_km):
     """
-    Determines if a thermal point is within the defined cone.
+    The core logic for filtering thermals, using the haversine_distance and calculate_bearing functions.
     Args:
         thermal_lat, thermal_lon: Coordinates of the thermal.
         start_lat, start_lon: Coordinates of the start of the flight path.
@@ -90,8 +90,7 @@ def is_within_cone(thermal_lat, thermal_lon, start_lat, start_lon, end_lat, end_
 
 def parse_coords(coord_str):
     """
-    Parses a coordinate string from the .cup file (e.g., '3222.447S') and converts it to
-    a signed decimal degree float.
+    Converts coordinates from the .cup file's format to standard decimal degrees.
     Args:
         coord_str: The coordinate string.
     Returns:
@@ -109,7 +108,7 @@ def parse_coords(coord_str):
 
 def convert_to_cup_coord(decimal_degrees, is_lat=True):
     """
-    Converts a decimal degree coordinate to the CUP format (DDMM.MMM).
+    Converts decimal degrees back to the .cup file's coordinate format.
     Args:
         decimal_degrees: The coordinate in signed decimal degrees.
         is_lat: True for latitude, False for longitude.
@@ -130,7 +129,7 @@ def convert_to_cup_coord(decimal_degrees, is_lat=True):
 
 def read_waypoints_from_cup(file_path):
     """
-    Reads waypoints from a .cup file and returns a list of dictionaries.
+    Reads the waypoints from the gcwa extended.cup file.
     Args:
         file_path: The path to the .cup file.
     Returns:
@@ -167,7 +166,7 @@ def read_waypoints_from_cup(file_path):
 
 def get_float_input(prompt, default_value):
     """
-    Prompts the user for a float value with error handling and a default option.
+    Prompts the user for a numerical input with error handling.
     """
     while True:
         try:
@@ -181,7 +180,7 @@ def get_float_input(prompt, default_value):
 
 def write_cup_file(csv_path, cup_path):
     """
-    Reads the filtered CSV file and writes a .cup file with waypoints.
+    Creates a new .cup file from the filtered data.
     Args:
         csv_path: Path to the input CSV file.
         cup_path: Path to the output .cup file.
@@ -240,7 +239,7 @@ def write_cup_file(csv_path, cup_path):
 
 def write_kml_file(csv_path, kml_path):
     """
-    Reads the filtered CSV file and writes a KML file with placemarks.
+    Creates a new .kml file from the filtered data.
     Args:
         csv_path: Path to the input CSV file.
         kml_path: Path to the output KML file.
@@ -286,5 +285,4 @@ def write_kml_file(csv_path, kml_path):
         print(f"Error: The file '{csv_path}' was not found. Cannot create KML file.")
     except Exception as e:
         print(f"An unexpected error occurred while writing the KML file: {e}")
-
 
