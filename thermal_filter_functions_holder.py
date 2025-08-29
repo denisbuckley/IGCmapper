@@ -287,3 +287,4 @@ def write_kml_file(csv_path, kml_path):
     except Exception as e:
         print(f"An unexpected error occurred while writing the KML file: {e}")
 
+
