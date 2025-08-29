@@ -9,7 +9,7 @@ from thermal_filter_functions_holder import *
 # lie within a defined cone along a flight path, and exports the filtered
 # data to a new CSV, CUP, and KML file. The start and end points of the flight path are
 # now chosen by the user from a list of waypoints read from a .cup file.
-# The user is also prompted to enter values for the cone angle and tolerance.
+# The user is now prompted to enter a value only for the cone angle.
 #
 # The code's logic works in two stages:
 #
@@ -27,7 +27,21 @@ from thermal_filter_functions_holder import *
 #
 # By combining these two checks, the script efficiently and accurately filters for thermals
 # that are both on the flight path and within the specified cone.
+
+
+# The script calls the following functions:
 #
+# haversine_distance(): Calculates the distance between two geographical points.
+# calculate_bearing(): Determines the bearing (direction) from one point to another.
+# is_within_cone(): The core logic for filtering thermals, using the haversine_distance and calculate_bearing functions.
+# parse_coords(): Converts coordinates from the .cup file's format to standard decimal degrees.
+# convert_to_cup_coord(): Converts decimal degrees back to the .cup file's coordinate format.
+# read_waypoints_from_cup(): Reads the waypoints from the gcwa extended.cup file.
+# get_float_input(): Prompts the user for a numerical input with error handling.
+# write_cup_file(): Creates a new .cup file from the filtered data.
+# write_kml_file(): Creates a new .kml file from the filtered data.
+
+
 # Required libraries: none beyond standard Python.
 
 
@@ -74,12 +88,17 @@ def main():
     start_lat, start_lon = start_waypoint['lat'], start_waypoint['lon']
     end_lat, end_lon = end_waypoint['lat'], end_waypoint['lon']
 
-    # 3. Prompt user for cone angle and tolerance values
+    # 3. Prompt user for cone angle and calculate the tolerance
     cone_angle = get_float_input("Enter the cone angle in degrees (e.g., 20): ", 30)
-    tolerance = get_float_input("Enter the distance tolerance in kilometers (e.g., 5): ", 5)
+
+    # The tolerance is dynamically calculated based on the flight path distance and cone angle.
+    # This models a widening search corridor where the maximum lateral deviation occurs at the
+    # midpoint of the path. The formula is: tolerance = (distance_of_flight_path / 2) * tan(cone_angle / 2).
+    total_distance = haversine_distance(start_lat, start_lon, end_lat, end_lon)
+    tolerance = (total_distance / 2) * math.tan(math.radians(cone_angle / 2))
 
     print(f"\nFiltering thermals for a flight path from '{start_waypoint['name']}' to '{end_waypoint['name']}'...")
-    print(f"Using Cone Angle: {cone_angle} degrees, Tolerance: {tolerance} km")
+    print(f"Using Cone Angle: {cone_angle} degrees, Calculated Tolerance: {tolerance:.2f} km")
     print(f"Start Coords: ({start_lat}, {start_lon})")
     print(f"End Coords: ({end_lat}, {end_lon})")
 
@@ -126,4 +145,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
