@@ -27,7 +27,21 @@ from thermal_filter_functions_holder import *
 #
 # By combining these two checks, the script efficiently and accurately filters for thermals
 # that are both on the flight path and within the specified cone.
+
+
+# The script calls the following functions:
 #
+# haversine_distance(): Calculates the distance between two geographical points.
+# calculate_bearing(): Determines the bearing (direction) from one point to another.
+# is_within_cone(): The core logic for filtering thermals, using the haversine_distance and calculate_bearing functions.
+# parse_coords(): Converts coordinates from the .cup file's format to standard decimal degrees.
+# convert_to_cup_coord(): Converts decimal degrees back to the .cup file's coordinate format.
+# read_waypoints_from_cup(): Reads the waypoints from the gcwa extended.cup file.
+# get_float_input(): Prompts the user for a numerical input with error handling.
+# write_cup_file(): Creates a new .cup file from the filtered data.
+# write_kml_file(): Creates a new .kml file from the filtered data.
+
+
 # Required libraries: none beyond standard Python.
 
 
@@ -126,4 +140,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
