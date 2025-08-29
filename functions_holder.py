@@ -209,3 +209,59 @@ def consolidate_thermals(df, min_climb_rate, radius_km):
     print(f"DBSCAN found {n_clusters} clusters and {n_noise} noise points.")
 
     return consolidated_df, coords_df
+
+
+import re
+
+
+def get_flight_duration(filename):
+    """
+    Calculates the flight duration in minutes from an IGC file.
+
+    It finds the timestamps of the first and last B-records and calculates
+    the difference.
+
+    Parameters:
+    - filename (str): The path to the IGC file.
+
+    Returns:
+    - float: The total flight duration in minutes.
+    """
+    first_timestamp = None
+    last_timestamp = None
+
+    # Regular expression to match B-records and extract the time
+    b_record_time_pattern = re.compile(r"^B(\d{6})")
+
+    try:
+        with open(filename, 'r') as f:
+            for line in f:
+                if line.startswith('B'):
+                    match = b_record_time_pattern.match(line)
+                    if match:
+                        current_time = int(match.group(1))
+                        # If it's the first record, store the timestamp
+                        if first_timestamp is None:
+                            first_timestamp = current_time
+                        # Always update the last timestamp
+                        last_timestamp = current_time
+    except FileNotFoundError:
+        raise
+
+    if first_timestamp is None or last_timestamp is None:
+        return 0.0  # No B-records found
+
+    # Convert HHMMSS to seconds
+    def to_seconds(timestamp):
+        return (timestamp // 10000) * 3600 + ((timestamp // 100) % 100) * 60 + (timestamp % 100)
+
+    start_seconds = to_seconds(first_timestamp)
+    end_seconds = to_seconds(last_timestamp)
+
+    # Handle overnight flights where end time is smaller than start time
+    if end_seconds < start_seconds:
+        end_seconds += 24 * 3600
+
+    duration_seconds = end_seconds - start_seconds
+
+    return duration_seconds / 60.0
