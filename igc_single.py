@@ -3,6 +3,7 @@
 # Python functionality and the `matplotlib` library for plotting, without
 # requiring any third-party IGC parsing libraries.
 #
+
 # Functions Called:
 # - haversine_distance: Calculates the distance between two geographic points.
 # - igc_to_decimal_degrees: Converts IGC format coordinates to decimal degrees.
