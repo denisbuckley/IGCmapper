@@ -5,6 +5,7 @@
 # prompts the user for analysis parameters, providing default values.
 # detailed description at end of script
 
+
 # DataFrame with strength saved to 'consolidated_thermal_data.csv'
 # DataFrame with only coordinates saved to 'consolidated_thermal_coords.csv'
 
