@@ -1,147 +1,109 @@
-import csv
-import math
-
-# Import all functions from the new holder file
-from thermal_filter_functions_holder import *
-
+# Purpose:
+# This file contains the core logic for the thermal analysis. It uses the raw
+# flight data to identify, filter, and consolidate thermal events based on
+# user-defined parameters (time window, altitude gain, distance, etc.).
+# It's the "engine" that performs the main computational tasks.
 #
-# This script reads thermal data from a CSV file, filters the points that
-# lie within a defined cone along a flight path, and exports the filtered
-# data to a new CSV, CUP, and KML file. The start and end points of the flight path are
-# now chosen by the user from a list of waypoints read from a .cup file.
-# The user is now prompted to enter a value only for the cone angle.
-#
-# The code's logic works in two stages:
-#
-# 1. The "On the Line" Check: It first calculates the total distance of the flight
-#    path. Then, for each thermal, it checks if the distance from the start to the
-#    thermal plus the distance from the thermal to the end is approximately equal
-#    to the total path distance. If this is true, the thermal must lie very close
-#    to the straight line defined by the flight path.
-#
-# 2. The "In the Cone" Check: It then calculates the bearing (direction) from the
-#    start point to the end point. It compares this with the bearing from the
-#    start point to the thermal. If the difference between these two bearings is
-#    less than the CONE_ANGLE_DEG, the thermal is considered to be within the
-#    desired sector.
-#
-# By combining these two checks, the script efficiently and accurately filters for thermals
-# that are both on the flight path and within the specified cone.
+# Relationship:
+# This module is a consumer of data from `igc_parser.py` and a provider of
+# results to `run_thermal_analysis.py`. It imports functions from `igc_parser.py`
+# and its main functions are called by `run_thermal_analysis.py`.
+
+import pandas as pd
+import numpy as np
+from sklearn.cluster import DBSCAN
+from geopy.distance import geodesic
+from igc_parser import load_all_igc_data, calculate_climb_rate
 
 
-# The script calls the following functions:
-#
-# haversine_distance(): Calculates the distance between two geographical points.
-# calculate_bearing(): Determines the bearing (direction) from one point to another.
-# is_within_cone(): The core logic for filtering thermals, using the haversine_distance and calculate_bearing functions.
-# parse_coords(): Converts coordinates from the .cup file's format to standard decimal degrees.
-# convert_to_cup_coord(): Converts decimal degrees back to the .cup file's coordinate format.
-# read_waypoints_from_cup(): Reads the waypoints from the gcwa extended.cup file.
-# get_float_input(): Prompts the user for a numerical input with error handling.
-# write_cup_file(): Creates a new .cup file from the filtered data.
-# write_kml_file(): Creates a new .kml file from the filtered data.
-
-
-# Required libraries: none beyond standard Python.
-
-
-# --- Configuration ---
-# File names for input and output
-WAYPOINT_FILE = 'gcwa extended.cup'
-INPUT_FILE = 'consolidated_thermal_coords.csv'
-OUTPUT_CSV_FILE = 'filtered_thermals.csv'
-OUTPUT_CUP_FILE = 'filtered_thermals.cup'
-OUTPUT_KML_FILE = 'filtered_thermals.kml'
-
-
-def main():
+def get_thermals_as_dataframe(folder_path, time_window, dist_threshold, alt_gain):
     """
-    Main function to read data, filter, and write to new CSV and CUP files.
-    It now prompts the user to select waypoints for the flight path and
-    enter filter parameters.
+    Identifies individual thermal events from the flight data and returns them as a DataFrame.
     """
-    # 1. Read waypoints from the .cup file
-    print(f"Reading waypoints from '{WAYPOINT_FILE}'...")
-    waypoints = read_waypoints_from_cup(WAYPOINT_FILE)
-    if not waypoints:
-        return  # Exit if waypoints couldn't be loaded
+    print("\nStarting raw thermal detection...")
+    raw_data = load_all_igc_data(folder_path)
+    if not raw_data:
+        return pd.DataFrame()
 
-    # 2. Present waypoints and get user input for start and end points
-    print("\nAvailable Waypoints:")
-    for i, wp in enumerate(waypoints):
-        print(f"[{i + 1}] {wp['name']} ({wp['code']})")
+    df = pd.DataFrame(raw_data)
+    df.sort_values(by='time', inplace=True)
+    df.reset_index(drop=True, inplace=True)
 
-    def get_user_waypoint(prompt):
-        while True:
-            try:
-                choice = int(input(f"\nEnter the number for the {prompt} waypoint: "))
-                if 1 <= choice <= len(waypoints):
-                    return waypoints[choice - 1]
-                else:
-                    print(f"Invalid selection. Please enter a number between 1 and {len(waypoints)}.")
-            except ValueError:
-                print("Invalid input. Please enter a number.")
+    thermals = []
 
-    start_waypoint = get_user_waypoint("start")
-    end_waypoint = get_user_waypoint("end")
+    for i in range(len(df) - 1):
+        for j in range(i + 1, len(df)):
+            start_point = df.iloc[i]
+            end_point = df.iloc[j]
 
-    start_lat, start_lon = start_waypoint['lat'], start_waypoint['lon']
-    end_lat, end_lon = end_waypoint['lat'], end_waypoint['lon']
+            # Condition 1: Time window
+            duration = (end_point['time'].hour * 3600 + end_point['time'].minute * 60 + end_point['time'].second) - \
+                       (start_point['time'].hour * 3600 + start_point['time'].minute * 60 + start_point['time'].second)
+            if duration > time_window:
+                break
 
-    # 3. Prompt user for cone angle and calculate the tolerance
-    cone_angle = get_float_input("Enter the cone angle in degrees (e.g., 20): ", 30)
+            # Condition 2: Altitude gain
+            altitude_change = end_point['alt'] - start_point['alt']
+            if altitude_change < alt_gain:
+                continue
 
-    # The tolerance is dynamically calculated based on the flight path distance and cone angle.
-    # This models a widening search corridor where the maximum lateral deviation occurs at the
-    # midpoint of the path. The formula is: tolerance = (distance_of_flight_path / 2) * tan(cone_angle / 2).
-    total_distance = haversine_distance(start_lat, start_lon, end_lat, end_lon)
-    tolerance = (total_distance / 2) * math.tan(math.radians(cone_angle / 2))
+            # Condition 3: Distance threshold
+            distance = geodesic((start_point['lat'], start_point['lon']), (end_point['lat'], end_point['lon'])).meters
+            if distance <= dist_threshold:
+                climb_rate = calculate_climb_rate(start_point['alt'], end_point['alt'], start_point['time'],
+                                                  end_point['time'])
+                thermals.append({
+                    'start_time': start_point['time'],
+                    'end_time': end_point['time'],
+                    'lat': np.mean([start_point['lat'], end_point['lat']]),
+                    'lon': np.mean([start_point['lon'], end_point['lon']]),
+                    'climb_rate': climb_rate,
+                    'altitude_gain': altitude_change,
+                    'duration': duration
+                })
 
-    print(f"\nFiltering thermals for a flight path from '{start_waypoint['name']}' to '{end_waypoint['name']}'...")
-    print(f"Using Cone Angle: {cone_angle} degrees, Calculated Tolerance: {tolerance:.2f} km")
-    print(f"Start Coords: ({start_lat}, {start_lon})")
-    print(f"End Coords: ({end_lat}, {end_lon})")
-
-    # 4. Read thermal data and apply the filter, writing to the new CSV file
-    print(f"\nReading thermal data from '{INPUT_FILE}'...")
-    try:
-        filtered_rows = []
-        with open(INPUT_FILE, mode='r', newline='') as infile:
-            reader = csv.reader(infile)
-            header = next(reader)  # Read the header row
-
-            with open(OUTPUT_CSV_FILE, mode='w', newline='') as outfile:
-                writer = csv.writer(outfile)
-                writer.writerow(header)  # Write the header to the new CSV file
-
-                for row in reader:
-                    try:
-                        # Parse the data from the row
-                        lat, lon, strength = float(row[0]), float(row[1]), float(row[2])
-
-                        # Apply the filter with the user-selected waypoints and parameters
-                        if is_within_cone(lat, lon, start_lat, start_lon, end_lat, end_lon, cone_angle, tolerance):
-                            writer.writerow(row)  # Write the row to the new CSV file
-                            filtered_rows.append(row)
-
-                    except (ValueError, IndexError) as e:
-                        # Skip malformed rows but notify the user
-                        print(f"Warning: Skipping malformed row '{row}'. Error: {e}")
-
-        print(f"\nFiltering complete. Wrote {len(filtered_rows)} rows to '{OUTPUT_CSV_FILE}'.")
-
-        # 5. Write the CUP and KML files from the filtered CSV data
-        if len(filtered_rows) > 0:
-            write_cup_file(OUTPUT_CSV_FILE, OUTPUT_CUP_FILE)
-            write_kml_file(OUTPUT_CSV_FILE, OUTPUT_KML_FILE)
-        else:
-            print("No thermals were filtered. Skipping file generation.")
-
-    except FileNotFoundError:
-        print(f"Error: The file '{INPUT_FILE}' was not found.")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+    return pd.DataFrame(thermals)
 
 
-if __name__ == "__main__":
-    main()
+def consolidate_thermals(thermal_df, min_climb_rate, radius_km):
+    """
+    Consolidates thermals using DBSCAN clustering and filters by climb rate.
+    Returns a consolidated DataFrame and a DataFrame of coordinates.
+    """
+    if thermal_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Filter out thermals below the minimum climb rate
+    filtered_df = thermal_df[thermal_df['climb_rate'] >= min_climb_rate].copy()
+
+    if filtered_df.empty:
+        print("\nNo thermals found that meet the minimum climb rate threshold.")
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Use DBSCAN to cluster nearby thermals
+    coords = filtered_df[['lat', 'lon']].values
+    # Haversine distance is in degrees, so convert km to degrees for the eps parameter
+    earth_radius_km = 6371
+    epsilon = radius_km / earth_radius_km
+
+    db = DBSCAN(eps=epsilon, min_samples=1, algorithm='ball_tree', metric='haversine').fit(np.radians(coords))
+    filtered_df['cluster'] = db.labels_
+
+    # Aggregate clusters to get consolidated thermals
+    consolidated_thermals = filtered_df.groupby('cluster').agg(
+        lat=('lat', 'mean'),
+        lon=('lon', 'mean'),
+        avg_climb_rate=('climb_rate', 'mean'),
+        total_altitude_gain=('altitude_gain', 'sum'),
+        total_duration=('duration', 'sum'),
+        num_thermals=('cluster', 'size')
+    ).reset_index(drop=True)
+
+    # Calculate "strength" for each consolidated thermal
+    consolidated_thermals['strength'] = consolidated_thermals['num_thermals'] * consolidated_thermals['avg_climb_rate']
+    consolidated_thermals.sort_values(by='strength', ascending=False, inplace=True)
+
+    # Prepare a separate DataFrame with just the coordinates for mapping
+    consolidated_coords = consolidated_thermals[['lat', 'lon', 'avg_climb_rate']].copy()
+
+    return consolidated_thermals, consolidated_coords

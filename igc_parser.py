@@ -1,98 +1,116 @@
-# This module contains the low-level logic for parsing a single IGC file
-# and finding thermals based on a set of user-defined heuristics.
+# This module is responsible for orchestrating the data processing workflow.
+# It reads IGC files from a folder and consolidates the results into a DataFrame.
 
 import os
+import pandas as pd
 import numpy as np
-from datetime import datetime
-from geopy.distance import geodesic
+from tqdm import tqdm
+from sklearn.cluster import DBSCAN
+from igc_parser import find_thermals_in_file
 
 
-def find_thermals_in_file(file_path, time_window, distance_threshold, altitude_change_threshold):
+def get_thermals_as_dataframe(igc_folder, time_window, distance_threshold, altitude_change_threshold):
     """
-    Analyzes an IGC file to find thermals based on user-defined heuristics.
+    Reads all IGC files in a folder, finds thermals in each, and consolidates the
+    results into a single pandas DataFrame. A progress bar is shown.
 
     Args:
-        file_path (str): The path to the IGC file.
-        time_window (int): The time window in seconds for analysis.
+        igc_folder (str): The path to the folder containing IGC files.
+        time_window (int): The time window in seconds for thermal detection.
         distance_threshold (int): The maximum distance in meters for a thermal.
         altitude_change_threshold (int): The minimum altitude gain in meters for a thermal.
 
     Returns:
-        list: A list of dictionaries, where each dictionary represents a detected thermal.
+        pandas.DataFrame: A DataFrame containing all detected thermals.
     """
-    thermals = []
+    all_thermals = []
 
-    # Read IGC file content. A real-world scenario would require a robust IGC parser.
-    try:
-        with open(file_path, 'r') as f:
-            lines = f.readlines()
-    except Exception as e:
-        # Silently skip files that can't be read.
-        return thermals
+    if not os.path.exists(igc_folder):
+        print(f"The specified folder does not exist: {igc_folder}")
+        return pd.DataFrame()
 
-    points = []
-    # Simplified parsing for B-records (time, lat, lon, alt)
-    for line in lines:
-        if line.startswith('B'):
-            try:
-                # Example B-record: B0950345100694N00647355EA0037300375
-                time_str = line[1:7]
-                lat_str = line[7:15]
-                lon_str = line[15:24]
-                # GPS altitude (meters) is at index 30-35
-                gps_alt = int(line[30:35])
+    igc_files = [f for f in os.listdir(igc_folder) if f.endswith('.igc')]
 
-                # Convert lat/lon strings to degrees
-                lat = int(lat_str[:2]) + int(lat_str[2:7]) / 60000.0
-                if lat_str[7] == 'S':
-                    lat = -lat
+    if not igc_files:
+        print(f"No .igc files found in {igc_folder}.")
+        return pd.DataFrame()
 
-                lon = int(lon_str[:3]) + int(lon_str[3:8]) / 60000.0
-                if lon_str[8] == 'W':
-                    lon = -lon
+    print(f"Found {len(igc_files)} IGC files to process.")
 
-                time = datetime.strptime(time_str, '%H%M%S').time()
+    # Use tqdm to create a progress bar for the file loop
+    for file_name in tqdm(igc_files, desc="Processing IGC files"):
+        file_path = os.path.join(igc_folder, file_name)
+        file_thermals = find_thermals_in_file(file_path, time_window, distance_threshold, altitude_change_threshold)
+        all_thermals.extend(file_thermals)
 
-                points.append({
-                    'time': time,
-                    'latitude': lat,
-                    'longitude': lon,
-                    'altitude': gps_alt
-                })
-            except (ValueError, IndexError):
-                continue  # Skip invalid lines
+    return pd.DataFrame(all_thermals)
 
-    if not points:
-        return thermals
 
-    # Heuristic-based thermal detection
-    for i in range(len(points) - 1):
-        for j in range(i + 1, len(points)):
-            start_point = points[i]
-            end_point = points[j]
+def consolidate_thermals(df, min_climb_rate, radius_km):
+    """
+    Filters and groups thermals to find the strongest ones in a given radius.
+    This version uses DBSCAN for vastly improved performance.
 
-            time_diff = (datetime.combine(datetime.min, end_point['time']) -
-                         datetime.combine(datetime.min, start_point['time'])).total_seconds()
+    Args:
+        df (pandas.DataFrame): The DataFrame of thermals.
+        min_climb_rate (float): Minimum average climb rate to filter thermals.
+        radius_km (float): Radius in km to group thermals.
 
-            if time_diff > time_window:
-                break  # Time window exceeded, move to the next start point
+    Returns:
+        tuple: A tuple containing two DataFrames:
+               - The consolidated DataFrame with strength metrics.
+               - A DataFrame with just coordinates for plotting.
+    """
+    if df.empty:
+        return pd.DataFrame(), pd.DataFrame()
 
-            # Calculate distance and altitude change using geopy for better accuracy
-            distance = geodesic((start_point['latitude'], start_point['longitude']),
-                                (end_point['latitude'], end_point['longitude'])).meters
+    # Filter out thermals that don't meet the minimum climb rate
+    filtered_df = df[df['avg_climb_rate_mps'] >= min_climb_rate].copy()
 
-            altitude_change = end_point['altitude'] - start_point['altitude']
+    if filtered_df.empty:
+        print("No thermals met the minimum climb rate threshold. Returning empty DataFrames.")
+        return pd.DataFrame(), pd.DataFrame()
 
-            # Check if it's a thermal based on heuristics
-            if distance <= distance_threshold and altitude_change >= altitude_change_threshold:
-                thermals.append({
-                    'file_name': os.path.basename(file_path),
-                    'start_time': start_point['time'],
-                    'start_lat': start_point['latitude'],
-                    'start_lon': start_point['longitude'],
-                    'altitude_change': altitude_change,
-                    'duration_s': time_diff,
-                    'avg_climb_rate_mps': altitude_change / time_diff if time_diff > 0 else 0
-                })
+    # Prepare data for DBSCAN
+    coords = filtered_df[['start_lat', 'start_lon']].to_numpy()
 
-    return thermals
+    # Use geodesic distance in meters for DBSCAN, which is much more accurate
+    # than Euclidean distance on lat/lon coordinates.
+    # geopy.distance.geodesic is not a valid metric for DBSCAN. Using haversine,
+    # which is a standard choice for geospatial clustering. The eps (epsilon)
+    # is the maximum distance in radians between two samples for one to be considered
+    # as in the neighborhood of the other.
+    db = DBSCAN(eps=np.radians(radius_km / 111.32), min_samples=2, metric='haversine').fit(np.radians(coords))
+    labels = db.labels_
+
+    # Create a new DataFrame with cluster labels
+    clustered_df = filtered_df.copy()
+    clustered_df['cluster'] = labels
+
+    # Remove noise points (labeled as -1 by DBSCAN)
+    clustered_df = clustered_df[clustered_df['cluster'] != -1]
+
+    if clustered_df.empty:
+        print("DBSCAN found no valid clusters. Returning empty DataFrames.")
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Group by cluster and calculate consolidated thermal properties
+    consolidated_df = clustered_df.groupby('cluster').agg(
+        latitude=('start_lat', 'mean'),
+        longitude=('start_lon', 'mean'),
+        avg_climb_rate_mps=('avg_climb_rate_mps', 'mean'),
+        count=('file_name', 'count')
+    ).reset_index()
+
+    # Create the coordinates DataFrame for plotting
+    coords_df = consolidated_df[['latitude', 'longitude', 'avg_climb_rate_mps']].copy()
+
+    # The strength metric for plotting should be the average climb rate
+    coords_df.rename(columns={'avg_climb_rate_mps': 'strength'}, inplace=True)
+
+    # Print a summary of the clustering results
+    n_clusters = len(consolidated_df)
+    n_noise = len(df) - len(clustered_df)
+    print(f"DBSCAN found {n_clusters} clusters and {n_noise} noise points.")
+
+    return consolidated_df, coords_df
