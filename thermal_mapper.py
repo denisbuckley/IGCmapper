@@ -6,7 +6,7 @@
 #
 # Required libraries: matplotlib, numpy, scipy
 # Install with: pip install matplotlib numpy scipy
-#
+# see end for comprehensive description
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -379,3 +379,35 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+'''This Python script is a comprehensive tool for analyzing multiple IGC flight log files to statistically model thermal behavior. It's designed for glider pilots and meteorologists who want to understand the characteristics of thermals in a specific geographic area or under certain conditions.
+
+Key Analysis and Functionality
+The script goes beyond a single-flight analysis by aggregating data from many flights. Its core functions are:
+
+Thermal and Sustained Lift Identification: It processes each IGC file and separates periods of sustained lift into two categories:
+
+Thermals: Periods where the pilot gained altitude while staying within a confined, circling area.
+
+Sustained Lift: Periods of altitude gain over a larger, more linear flight path (e.g., ridge lift or "street" flying).
+
+Statistical Modeling: After gathering data from all files, it performs several statistical calculations:
+
+Thermal Strength: It calculates the probability distribution of thermal strengths (average climb rate), providing the mean, median, and standard deviation.
+
+Thermal Distance: It calculates the probability distribution of distances between consecutive thermal events. It intelligently filters out short distances (where thermals are likely part of a single event) and large distances that might skew the data.
+
+Exponential Lambda (λ): It calculates the λ parameter for the exponential distribution of thermal strength, which is useful for modeling thermal properties.
+
+Spatial Poisson Lambda (λ): It estimates the spatial density of thermals by calculating the total flight area (using a convex hull of the flight path) and dividing the total number of thermals by that area. This gives a value for thermals per square kilometer (thermals/km 
+2
+ ), which is a crucial metric for flight planning.
+
+Data Visualization: Finally, it uses the matplotlib library to generate two plots:
+
+A histogram of thermal strength, showing the distribution of lift rates.
+
+A histogram of thermal distances, showing how far apart thermals are on average.
+
+In essence, this file transforms raw flight data from many sources into meaningful statistical insights and visual plots, helping pilots understand and predict thermal conditions.'''

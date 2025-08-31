@@ -2,7 +2,8 @@
 # and plot potential thermals and significant climbs. It relies solely on built-in
 # Python functionality and the `matplotlib` library for plotting, without
 # requiring any third-party IGC parsing libraries.
-#
+# see end for comprehensive descripotion
+
 # Functions Called:
 # - haversine_distance: Calculates the distance between two geographic points.
 # - igc_to_decimal_degrees: Converts IGC format coordinates to decimal degrees.
@@ -324,3 +325,23 @@ if __name__ == "__main__":
         plot_igc_with_thermals(igc_file)
     else:
         print(f"The file '{igc_file}' does not exist.")
+
+
+'''This Python script is a manual tool for analyzing and visualizing IGC flight log files. It's designed specifically for glider pilots and other flying enthusiasts to help them identify key moments in a flight without needing any specialized parsing libraries.
+
+The script performs three main functions:
+
+1. Manual IGC File Parsing
+Unlike more advanced tools that use third-party libraries, this script does all the heavy lifting itself. It reads the raw IGC file, line by line, and manually extracts the time, latitude, longitude, and altitude from the flight data records.
+
+2. Identifying Thermals and Climbs
+The script uses several built-in rules (heuristics) to find important sections of the flight:
+
+Thermals: It looks for periods where the pilot gained altitude while staying within a confined area for a specific amount of time. This suggests the pilot was "circling" in a thermal, which is a column of rising air. It then groups these circling periods together into a single thermal event.
+
+Significant Climbs: It also identifies any continuous climbs that are greater than a user-defined altitude threshold, which can indicate strong lift.
+
+3. Plotting and Visualization
+After the analysis is complete, the script uses the Matplotlib library to create a plot of the entire flight path. It then marks the locations of the identified thermals and significant climbs with different colors and symbols on the map, providing a simple visual summary of the flight.
+
+Essentially, this file is a self-contained flight analysis tool that takes an IGC file as input and outputs a detailed summary and a visual plot of the flight, highlighting where the pilot likely found lift.'''
