@@ -1,7 +1,14 @@
+# This script manually reads, parses, and analyzes an IGC flight file to identify
+# and plot potential thermals and significant climbs. It relies solely on built-in
+# Python functionality and the `matplotlib` library for plotting, without
+# requiring any third-party IGC parsing libraries.
 #
-# This script manually reads and parses an IGC file, plotting the flight path
-# and marking potential thermals, circling areas, and significant climbs.
-# It does not require a third-party IGC parsing library.
+# Functions Called:
+# - haversine_distance: Calculates the distance between two geographic points.
+# - igc_to_decimal_degrees: Converts IGC format coordinates to decimal degrees.
+# - time_to_seconds: Converts a time string to total seconds from midnight.
+# - plot_igc_with_thermals: The main function that orchestrates the parsing,
+#   analysis, and plotting.
 #
 # Required library: matplotlib
 # Install with: pip install matplotlib
