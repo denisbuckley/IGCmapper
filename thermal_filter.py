@@ -4,7 +4,7 @@ import math
 # Import all functions from the new holder file
 from thermal_filter_functions_holder import *
 
-#
+# detailed description at end of script
 # This script reads thermal data from a CSV file, filters the points that
 # lie within a defined cone along a flight path, and exports the filtered
 # data to a new CSV, CUP, and KML file. The start and end points of the flight path are
@@ -148,3 +148,42 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+'''This Python script is a specialized tool for glider pilots and flight data analysts. 
+Its primary purpose is to filter a list of previously identified thermals, keeping only those that are relevant to a specific flight path.
+
+The script's workflow is broken down into a few key steps:
+
+Waypoint Selection
+The program begins by reading a list of waypoints from a .cup file, which is a common format for gliding navigation. 
+It then presents these waypoints to the user and asks them to select a start and end point for a specific flight leg. 
+This defines the straight-line path for which the thermals will be filtered.
+
+Cone Filtering
+The core of the script's logic is a filtering process that identifies thermals within a "cone" of influence along the flight path. 
+The user is prompted to define the cone angle, which determines how wide the search area is.
+
+The filtering itself is a two-part check for each thermal:
+
+On-the-Line Check: This check determines if a thermal is located directly on the flight path. 
+It does this by checking if the combined distance from the start point to the thermal and from the thermal 
+to the end point is roughly equal to the total distance of the flight path. 
+The "roughly equal" part is defined by a dynamically calculated tolerance, which gets wider as the distance from the start or end point increases, 
+mimicking the shape of a cone.
+
+In-the-Cone Check: This step ensures the thermal is in the correct direction. 
+It calculates the bearing (the direction in degrees) from the start to the end point and compares it to the bearing from the start point to the thermal. 
+If the difference between these two bearings is less than the user-defined cone angle, the thermal is considered to be within the cone.
+
+Output Generation
+Finally, the script writes the filtered thermal data to three separate files:
+
+filtered_thermals.csv: A simple comma-separated file that contains the filtered thermal coordinates and their strength.
+
+filtered_thermals.cup: A navigation file that can be loaded into flight planning software or gliding instruments.
+
+filtered_thermals.kml: A file format for viewing the filtered thermals as placemarks in applications like Google Earth.
+
+In essence, this script automates the process of finding and visualizing only the thermals 
+that would have been relevant to a pilot flying a specific route, making it easier to analyze a flight and understand its strategic thermal usage.'''
