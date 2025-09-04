@@ -1,6 +1,6 @@
 # This script analyzes multiple IGC files to determine the relationship
-# between the 'max_merge_distance_km' and the number of thermals detected.
-# It plots the total number of thermals against the merge distance.
+# between 'max_thermal_distance_km' and the number of valid thermal transitions.
+# It plots the total number of thermal transitions against the distance.
 #
 # The 'time_window', 'distance_threshold', 'altitude_change_threshold',
 # and 'max_gap_seconds' are held constant for this analysis.
@@ -20,7 +20,6 @@ time_window = 30  # seconds
 distance_threshold = 300  # meters, max distance traveled in the time window
 altitude_change_threshold = 73  # meters
 max_gap_seconds = 25  # seconds, maximum time gap to consider two segments part of the same thermal
-max_thermal_distance_km = 20  # kilometers, maximum distance to consider between thermals
 max_gliding_time_min = 5  # minutes, max time gap between thermals to consider for distance calculation
 
 
@@ -75,11 +74,10 @@ def time_to_seconds(time_str):
         return None
 
 
-def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_window, distance_threshold,
-                                     max_gap_seconds):
+def find_thermals(filepath, altitude_change_threshold, time_window, distance_threshold, max_gap_seconds):
     """
-    Parses a single IGC file to find thermals (circling) and sustained lift (linear).
-    Returns a list of thermal events, sustained lift segments, and flight path coordinates.
+    Parses a single IGC file to find thermal segments.
+    Returns a list of thermal events.
     """
     try:
         latitudes = []
@@ -106,7 +104,7 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_w
                         continue
 
         if not latitudes:
-            return [], [], 0, []
+            return []
 
         sustained_lift_points_indices = []
         for i in range(time_window, len(altitudes)):
@@ -115,15 +113,9 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_w
                 sustained_lift_points_indices.append(i)
 
         thermals_data = []
-        sustained_lift_data = []
 
         if not sustained_lift_points_indices:
-            flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
-            flight_path = list(zip(latitudes, longitudes))
-            return [], [], flight_duration, flight_path
-
-        if not sustained_lift_points_indices:
-            return [], [], 0, []
+            return []
 
         current_segment_indices = [sustained_lift_points_indices[0]]
         for i in range(1, len(sustained_lift_points_indices)):
@@ -140,22 +132,15 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_w
                     latitudes[start_index], longitudes[start_index],
                     latitudes[end_index], longitudes[end_index]
                 )
-                altitude_gain = altitudes[end_index] - altitudes[start_index]
-                duration = timestamps_seconds[end_index] - timestamps_seconds[start_index]
-
-                segment = {
-                    'start_location': (latitudes[start_index], longitudes[start_index]),
-                    'end_location': (latitudes[end_index], longitudes[end_index]),
-                    'start_timestamp': timestamps_seconds[start_index],
-                    'end_timestamp': timestamps_seconds[end_index],
-                    'altitude_gain': altitude_gain,
-                    'climb_rate': altitude_gain / duration if duration > 0 else 0
-                }
 
                 if distance_traveled < distance_threshold:
+                    segment = {
+                        'start_location': (latitudes[start_index], longitudes[start_index]),
+                        'end_location': (latitudes[end_index], longitudes[end_index]),
+                        'start_timestamp': timestamps_seconds[start_index],
+                        'end_timestamp': timestamps_seconds[end_index],
+                    }
                     thermals_data.append(segment)
-                else:
-                    sustained_lift_data.append(segment)
 
                 current_segment_indices = [current_point_index]
 
@@ -166,78 +151,58 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_w
                 latitudes[start_index], longitudes[start_index],
                 latitudes[end_index], longitudes[end_index]
             )
-            altitude_gain = altitudes[end_index] - altitudes[start_index]
-            duration = timestamps_seconds[end_index] - timestamps_seconds[start_index]
-
-            segment = {
-                'start_location': (latitudes[start_index], longitudes[start_index]),
-                'end_location': (latitudes[end_index], longitudes[end_index]),
-                'start_timestamp': timestamps_seconds[start_index],
-                'end_timestamp': timestamps_seconds[end_index],
-                'altitude_gain': altitude_gain,
-                'climb_rate': altitude_gain / duration if duration > 0 else 0
-            }
 
             if distance_traveled < distance_threshold:
+                segment = {
+                    'start_location': (latitudes[start_index], longitudes[start_index]),
+                    'end_location': (latitudes[end_index], longitudes[end_index]),
+                    'start_timestamp': timestamps_seconds[start_index],
+                    'end_timestamp': timestamps_seconds[end_index],
+                }
                 thermals_data.append(segment)
-            else:
-                sustained_lift_data.append(segment)
 
-        flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
-        flight_path = list(zip(latitudes, longitudes))
-
-        return thermals_data, sustained_lift_data, flight_duration, flight_path
+        return thermals_data
     except FileNotFoundError:
         print(f"Error: The file at '{filepath}' was not found.")
-        return [], [], 0, []
+        return []
     except Exception as e:
         print(f"An unexpected error occurred while processing {filepath}: {e}")
-        return [], [], 0, []
-
-
-def merge_thermals(thermals_data, max_merge_distance_km):
-    """
-    Merges closely spaced thermals into single thermal events.
-    """
-    if not thermals_data:
         return []
 
-    # Sort thermals by start time to ensure correct merging order
-    thermals_data.sort(key=lambda x: x['start_timestamp'])
 
-    merged_thermals = [thermals_data[0]]
-    for i in range(1, len(thermals_data)):
-        current_thermal = thermals_data[i]
-        last_merged_thermal = merged_thermals[-1]
+def count_thermal_transitions(thermals_data, max_thermal_distance_km, max_gliding_time_min):
+    """
+    Counts the number of valid transitions between thermals.
+    A transition is valid if the distance and time gap between thermals
+    is below the specified thresholds.
+    """
+    if len(thermals_data) < 2:
+        return 0
 
-        # Calculate the distance between the end of the last merged thermal
-        # and the start of the current thermal.
-        distance_between_thermals = haversine_distance(
-            last_merged_thermal['end_location'][0], last_merged_thermal['end_location'][1],
-            current_thermal['start_location'][0], current_thermal['start_location'][1]
-        )
+    valid_transitions = 0
+    for i in range(len(thermals_data) - 1):
+        thermal_1 = thermals_data[i]
+        thermal_2 = thermals_data[i + 1]
 
-        if distance_between_thermals <= max_merge_distance_km * 1000:
-            # If they are close, merge the two thermals.
-            last_merged_thermal['end_location'] = current_thermal['end_location']
-            last_merged_thermal['end_timestamp'] = current_thermal['end_timestamp']
-            last_merged_thermal['altitude_gain'] += current_thermal['altitude_gain']
-            duration = last_merged_thermal['end_timestamp'] - last_merged_thermal['start_timestamp']
-            if duration > 0:
-                last_merged_thermal['climb_rate'] = last_merged_thermal['altitude_gain'] / duration
-            else:
-                last_merged_thermal['climb_rate'] = 0
-        else:
-            # If they are not close, start a new merged thermal.
-            merged_thermals.append(current_thermal)
+        distance = haversine_distance(
+            thermal_1['end_location'][0], thermal_1['end_location'][1],
+            thermal_2['start_location'][0], thermal_2['start_location'][1]
+        ) / 1000  # Convert to km
 
-    return merged_thermals
+        time_gap_seconds = thermal_2['start_timestamp'] - thermal_1['end_timestamp']
+        time_gap_minutes = time_gap_seconds / 60
+
+        if distance <= max_thermal_distance_km and time_gap_minutes <= max_gliding_time_min:
+            valid_transitions += 1
+
+    return valid_transitions
 
 
 def main():
     """
-    Main function to analyze the effect of max_merge_distance_km.
-    It plots the total number of thermals detected across all files against a range of merge distances.
+    Main function to analyze the effect of max_thermal_distance_km.
+    It plots the total number of thermal transitions detected across all files
+    against a range of max thermal distances.
     """
     # --- Input folder to analyze ---
     folder_path = "./igc"
@@ -250,29 +215,28 @@ def main():
         return
 
     # Define the range of merge distances to test
-    merge_distances_to_test = np.arange(0.5, 10.5, 0.5)  # From 0.5km to 10km, in steps of 0.5km
-    total_thermal_counts = []
+    thermal_distances_to_test = np.arange(5, 105, 5)  # From 5km to 100km, in steps of 5km
+    total_transitions = []
 
-    print("Starting analysis of thermal count vs. max merge distance...")
-    for merge_dist in merge_distances_to_test:
-        total_thermals_for_dist = 0
+    print("Starting analysis of thermal transitions vs. max thermal distance...")
+    for thermal_dist in thermal_distances_to_test:
+        total_transitions_for_dist = 0
         for filename in igc_files:
-            thermals, _, _, _ = find_thermals_and_sustained_lift(filename, altitude_change_threshold, time_window,
-                                                                 distance_threshold, max_gap_seconds)
-            merged_thermals = merge_thermals(thermals, merge_dist)
-            total_thermals_for_dist += len(merged_thermals)
-        total_thermal_counts.append(total_thermals_for_dist)
-        print(f"Merge Distance {merge_dist}km: Detected {total_thermals_for_dist} thermals")
+            thermals = find_thermals(filename, altitude_change_threshold, time_window, distance_threshold,
+                                     max_gap_seconds)
+            transitions = count_thermal_transitions(thermals, thermal_dist, max_gliding_time_min)
+            total_transitions_for_dist += transitions
+        total_transitions.append(total_transitions_for_dist)
+        print(f"Max Thermal Distance {thermal_dist}km: Detected {total_transitions_for_dist} transitions")
 
     # Plot the results
     plt.figure(figsize=(10, 6))
-    plt.plot(merge_distances_to_test, total_thermal_counts, marker='o', linestyle='-', color='b')
-    plt.title('Total Thermals Detected vs. Max Merge Distance')
-    plt.xlabel('Max Merge Distance (km)')
-    plt.ylabel('Total Number of Thermals Detected')
+    plt.plot(thermal_distances_to_test, total_transitions, marker='o', linestyle='-', color='b')
+    plt.title('Total Thermal Transitions vs. Max Thermal Distance')
+    plt.xlabel('Max Thermal Distance (km)')
+    plt.ylabel('Total Number of Thermal Transitions')
     plt.grid(True)
     plt.show()
-
 
 
 if __name__ == "__main__":
