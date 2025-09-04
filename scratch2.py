@@ -1,10 +1,9 @@
 # This script analyzes multiple IGC files to determine the relationship
-# between the 'max_gap_seconds' and the number of thermals detected,
-# for several different 'distance_threshold' values.
-# It plots the total number of thermals against the max gap value,
-# with a separate line for each distance threshold.
+# between the 'max_merge_distance_km' and the number of thermals detected.
+# It plots the total number of thermals against the merge distance.
 #
-# The 'time_window' and 'altitude_change_threshold' are held constant.
+# The 'time_window', 'distance_threshold', 'altitude_change_threshold',
+# and 'max_gap_seconds' are held constant for this analysis.
 #
 # Required libraries: matplotlib, numpy, scipy
 # Install with: pip install matplotlib numpy scipy
@@ -16,14 +15,12 @@ import os
 import math
 from scipy.spatial import ConvexHull
 
-# --- User-configurable variables ---
-# These parameters are now constant for this specific analysis.
+# --- User-configurable variables (held constant for this analysis) ---
 time_window = 30  # seconds
+distance_threshold = 300  # meters, max distance traveled in the time window
 altitude_change_threshold = 73  # meters
-
-# These parameters are not varied in this analysis, but are used in the core logic.
+max_gap_seconds = 25  # seconds, maximum time gap to consider two segments part of the same thermal
 max_thermal_distance_km = 20  # kilometers, maximum distance to consider between thermals
-max_merge_distance_km = 3  # kilometers, maximum distance to consider two thermals as a single event
 max_gliding_time_min = 5  # minutes, max time gap between thermals to consider for distance calculation
 
 
@@ -111,19 +108,12 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_w
         if not latitudes:
             return [], [], 0, []
 
-        # Find sustained lift points (either circling or linear)
         sustained_lift_points_indices = []
         for i in range(time_window, len(altitudes)):
             altitude_diff = altitudes[i] - altitudes[i - time_window]
-            distance_traveled = haversine_distance(
-                latitudes[i], longitudes[i],
-                latitudes[i - time_window], longitudes[i - time_window]
-            )
             if altitude_diff > altitude_change_threshold:
                 sustained_lift_points_indices.append(i)
 
-        # Group successive sustained lift points into distinct segments,
-        # with tolerance for short gaps.
         thermals_data = []
         sustained_lift_data = []
 
@@ -132,7 +122,9 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_w
             flight_path = list(zip(latitudes, longitudes))
             return [], [], flight_duration, flight_path
 
-        # Initialize the first segment
+        if not sustained_lift_points_indices:
+            return [], [], 0, []
+
         current_segment_indices = [sustained_lift_points_indices[0]]
         for i in range(1, len(sustained_lift_points_indices)):
             current_point_index = sustained_lift_points_indices[i]
@@ -167,7 +159,6 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_w
 
                 current_segment_indices = [current_point_index]
 
-        # Process the last segment
         if current_segment_indices:
             start_index = current_segment_indices[0]
             end_index = current_segment_indices[-1]
@@ -204,10 +195,49 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_w
         return [], [], 0, []
 
 
+def merge_thermals(thermals_data, max_merge_distance_km):
+    """
+    Merges closely spaced thermals into single thermal events.
+    """
+    if not thermals_data:
+        return []
+
+    # Sort thermals by start time to ensure correct merging order
+    thermals_data.sort(key=lambda x: x['start_timestamp'])
+
+    merged_thermals = [thermals_data[0]]
+    for i in range(1, len(thermals_data)):
+        current_thermal = thermals_data[i]
+        last_merged_thermal = merged_thermals[-1]
+
+        # Calculate the distance between the end of the last merged thermal
+        # and the start of the current thermal.
+        distance_between_thermals = haversine_distance(
+            last_merged_thermal['end_location'][0], last_merged_thermal['end_location'][1],
+            current_thermal['start_location'][0], current_thermal['start_location'][1]
+        )
+
+        if distance_between_thermals <= max_merge_distance_km * 1000:
+            # If they are close, merge the two thermals.
+            last_merged_thermal['end_location'] = current_thermal['end_location']
+            last_merged_thermal['end_timestamp'] = current_thermal['end_timestamp']
+            last_merged_thermal['altitude_gain'] += current_thermal['altitude_gain']
+            duration = last_merged_thermal['end_timestamp'] - last_merged_thermal['start_timestamp']
+            if duration > 0:
+                last_merged_thermal['climb_rate'] = last_merged_thermal['altitude_gain'] / duration
+            else:
+                last_merged_thermal['climb_rate'] = 0
+        else:
+            # If they are not close, start a new merged thermal.
+            merged_thermals.append(current_thermal)
+
+    return merged_thermals
+
+
 def main():
     """
-    Main function to analyze the effect of max_gap_seconds for different distance_thresholds.
-    It plots the total number of thermals detected across all files.
+    Main function to analyze the effect of max_merge_distance_km.
+    It plots the total number of thermals detected across all files against a range of merge distances.
     """
     # --- Input folder to analyze ---
     folder_path = "./igc"
@@ -219,44 +249,28 @@ def main():
         print(f"No IGC files found in the folder: {folder_path}. Please check the path and try again.")
         return
 
-    # --- Define constant values for this analysis ---
-    fixed_time_window = 30
-    fixed_altitude_change = 73
+    # Define the range of merge distances to test
+    merge_distances_to_test = np.arange(0.5, 10.5, 0.5)  # From 0.5km to 10km, in steps of 0.5km
+    total_thermal_counts = []
 
-    # --- Define the ranges to test ---
-    gap_seconds_to_test = np.arange(10, 101, 5)  # From 10s to 100s, in steps of 5s
-    distance_thresholds_to_test = [100, 300, 500]  # Different distance filters
+    print("Starting analysis of thermal count vs. max merge distance...")
+    for merge_dist in merge_distances_to_test:
+        total_thermals_for_dist = 0
+        for filename in igc_files:
+            thermals, _, _, _ = find_thermals_and_sustained_lift(filename, altitude_change_threshold, time_window,
+                                                                 distance_threshold, max_gap_seconds)
+            merged_thermals = merge_thermals(thermals, merge_dist)
+            total_thermals_for_dist += len(merged_thermals)
+        total_thermal_counts.append(total_thermals_for_dist)
+        print(f"Merge Distance {merge_dist}km: Detected {total_thermals_for_dist} thermals")
 
+    # Plot the results
     plt.figure(figsize=(10, 6))
-
-    for distance_threshold in distance_thresholds_to_test:
-        total_thermal_counts_for_distance = []
-        print(f"\nStarting analysis for Distance Threshold: {distance_threshold}m...")
-
-        for max_gap in gap_seconds_to_test:
-            total_thermals_for_gap = 0
-            for filename in igc_files:
-                thermals, _, _, _ = find_thermals_and_sustained_lift(
-                    filename,
-                    fixed_altitude_change,
-                    fixed_time_window,
-                    distance_threshold,
-                    max_gap
-                )
-                total_thermals_for_gap += len(thermals)
-            total_thermal_counts_for_distance.append(total_thermals_for_gap)
-
-        # Plot the results for this specific distance_threshold
-        plt.plot(gap_seconds_to_test, total_thermal_counts_for_distance,
-                 marker='o', linestyle='-',
-                 label=f'Distance Threshold: {distance_threshold}m')
-
-    # Add labels, title, and legend
-    plt.title('Total Thermals vs. Max Gap Seconds for Different Distance Thresholds')
-    plt.xlabel('Max Gap Seconds')
+    plt.plot(merge_distances_to_test, total_thermal_counts, marker='o', linestyle='-', color='b')
+    plt.title('Total Thermals Detected vs. Max Merge Distance')
+    plt.xlabel('Max Merge Distance (km)')
     plt.ylabel('Total Number of Thermals Detected')
     plt.grid(True)
-    plt.legend()
     plt.show()
 
 
