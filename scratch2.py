@@ -1,6 +1,8 @@
 # This script analyzes multiple IGC files to determine the relationship
-# between the 'time_window' and the number of thermals detected.
-# It plots the total number of thermals against the time window value.
+# between the 'time_window' and the 'distance_threshold' and the number of
+# thermals detected.
+# It plots the total number of thermals against a normalized time window
+# and a normalized distance threshold on the same plot.
 #
 # The 'altitude_change_threshold' is held constant at 73m for this analysis.
 #
@@ -16,8 +18,8 @@ from scipy.spatial import ConvexHull
 
 # --- User-configurable variables ---
 # These parameters will be used as defaults, except for time_window.
-distance_threshold = 300  # meters, max distance traveled in the time window
-# Altitude change threshold is now constant at 73m.
+# NOTE: distance_threshold is now passed as a parameter to the analysis function
+# so it can be varied in the second test case.
 altitude_change_threshold = 73  # meters
 # New parameter to merge thermal segments separated by short gaps.
 max_gap_seconds = 20  # seconds, maximum time gap to consider two segments part of the same thermal
@@ -81,7 +83,7 @@ def time_to_seconds(time_str):
         return None
 
 
-def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_window):
+def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_window, distance_threshold):
     """
     Parses a single IGC file to find thermals (circling) and sustained lift (linear).
     Returns a list of thermal events, sustained lift segments, and flight path coordinates.
@@ -208,7 +210,7 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_w
 
 def main():
     """
-    Main function to analyze the effect of time_window.
+    Main function to analyze the effect of time_window and distance_threshold.
     It plots the total number of thermals detected across all files against a range of time windows.
     """
     # --- Input folder to analyze ---
@@ -221,26 +223,71 @@ def main():
         print(f"No IGC files found in the folder: {folder_path}. Please check the path and try again.")
         return
 
-    # Define the range of time windows to test
+    # --- Analysis for Curve 1: Thermals vs. Normalized Time Window ---
+    # Hold distance_threshold constant at 300m
+    fixed_distance_for_time_analysis = 300
+
+    # Define the range of time windows to test and their normalization factor
     time_windows_to_test = np.arange(10, 101, 10)  # From 10s to 100s, in steps of 10s
-    total_thermal_counts = []
+    normalized_time_windows = time_windows_to_test / 30
+    total_thermal_counts_time = []
 
     print("Starting analysis of thermal count vs. time window...")
     for time_window in time_windows_to_test:
         total_thermals_for_window = 0
         for filename in igc_files:
-            thermals, _, _, _ = find_thermals_and_sustained_lift(filename, altitude_change_threshold, time_window)
+            thermals, _, _, _ = find_thermals_and_sustained_lift(
+                filename,
+                altitude_change_threshold,
+                time_window,
+                fixed_distance_for_time_analysis
+            )
             total_thermals_for_window += len(thermals)
-        total_thermal_counts.append(total_thermals_for_window)
+        total_thermal_counts_time.append(total_thermals_for_window)
         print(f"Time Window {time_window}s: Detected {total_thermals_for_window} thermals")
 
-    # Plot the results
+    # --- Analysis for Curve 2: Thermals vs. Normalized Distance Threshold ---
+    # Hold time_window constant at 30s
+    fixed_time_window_for_distance_analysis = 30
+
+    # Define the range of distance thresholds to test and their normalization factor
+    distance_thresholds_to_test = np.arange(50, 501, 50)  # From 50m to 500m, in steps of 50m
+    normalized_distance_thresholds = distance_thresholds_to_test / 300
+    total_thermal_counts_distance = []
+
+    print("\nStarting analysis of thermal count vs. distance threshold...")
+    for distance_threshold in distance_thresholds_to_test:
+        total_thermals_for_distance = 0
+        for filename in igc_files:
+            thermals, _, _, _ = find_thermals_and_sustained_lift(
+                filename,
+                altitude_change_threshold,
+                fixed_time_window_for_distance_analysis,
+                distance_threshold
+            )
+            total_thermals_for_distance += len(thermals)
+        total_thermal_counts_distance.append(total_thermals_for_distance)
+        print(f"Distance Threshold {distance_threshold}m: Detected {total_thermals_for_distance} thermals")
+
+    # --- Plot the results on a single graph ---
     plt.figure(figsize=(10, 6))
-    plt.plot(time_windows_to_test, total_thermal_counts, marker='o', linestyle='-', color='b')
-    plt.title('Total Thermals Detected vs. Time Window')
-    plt.xlabel('Time Window (seconds)')
+
+    # Plot Curve 1 (Thermals vs. Normalized Time Window)
+    plt.plot(normalized_time_windows, total_thermal_counts_time,
+             marker='o', linestyle='-', color='b',
+             label=r'Varying Time Window ($t/30$)')
+
+    # Plot Curve 2 (Thermals vs. Normalized Distance Threshold)
+    plt.plot(normalized_distance_thresholds, total_thermal_counts_distance,
+             marker='x', linestyle='--', color='r',
+             label=r'Varying Distance Threshold ($d/300$)')
+
+    # Add labels, title, and legend
+    plt.title('Total Thermals vs. Normalized Parameters')
+    plt.xlabel('Normalized Parameter Value')
     plt.ylabel('Total Number of Thermals Detected')
     plt.grid(True)
+    plt.legend()
     plt.show()
 
 
