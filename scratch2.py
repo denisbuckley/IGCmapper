@@ -1,6 +1,6 @@
 # This script analyzes multiple IGC files to determine the relationship
-# between 'max_thermal_distance_km' and the number of valid thermal transitions.
-# It plots the total number of thermal transitions against the distance.
+# between the 'max_thermal_distance_km' and the number of thermals detected.
+# It plots the total number of thermals against the maximum allowed distance.
 #
 # The 'time_window', 'distance_threshold', 'altitude_change_threshold',
 # and 'max_gap_seconds' are held constant for this analysis.
@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import math
-from scipy.spatial import ConvexHull
 
 # --- User-configurable variables (held constant for this analysis) ---
 time_window = 30  # seconds
@@ -113,7 +112,6 @@ def find_thermals(filepath, altitude_change_threshold, time_window, distance_thr
                 sustained_lift_points_indices.append(i)
 
         thermals_data = []
-
         if not sustained_lift_points_indices:
             return []
 
@@ -170,38 +168,35 @@ def find_thermals(filepath, altitude_change_threshold, time_window, distance_thr
         return []
 
 
-def count_thermal_transitions(thermals_data, max_thermal_distance_km, max_gliding_time_min):
+def filter_thermals_by_distance(thermals_data, max_thermal_distance_km):
     """
-    Counts the number of valid transitions between thermals.
-    A transition is valid if the distance and time gap between thermals
-    is below the specified thresholds.
+    Filters a list of thermals, keeping only those that are within the
+    maximum distance from the preceding thermal.
     """
-    if len(thermals_data) < 2:
-        return 0
+    if not thermals_data:
+        return []
 
-    valid_transitions = 0
-    for i in range(len(thermals_data) - 1):
-        thermal_1 = thermals_data[i]
-        thermal_2 = thermals_data[i + 1]
+    filtered_thermals = [thermals_data[0]]
+
+    for i in range(1, len(thermals_data)):
+        prev_thermal = filtered_thermals[-1]
+        current_thermal = thermals_data[i]
 
         distance = haversine_distance(
-            thermal_1['end_location'][0], thermal_1['end_location'][1],
-            thermal_2['start_location'][0], thermal_2['start_location'][1]
+            prev_thermal['end_location'][0], prev_thermal['end_location'][1],
+            current_thermal['start_location'][0], current_thermal['start_location'][1]
         ) / 1000  # Convert to km
 
-        time_gap_seconds = thermal_2['start_timestamp'] - thermal_1['end_timestamp']
-        time_gap_minutes = time_gap_seconds / 60
+        if distance <= max_thermal_distance_km:
+            filtered_thermals.append(current_thermal)
 
-        if distance <= max_thermal_distance_km and time_gap_minutes <= max_gliding_time_min:
-            valid_transitions += 1
-
-    return valid_transitions
+    return filtered_thermals
 
 
 def main():
     """
     Main function to analyze the effect of max_thermal_distance_km.
-    It plots the total number of thermal transitions detected across all files
+    It plots the total number of thermals detected across all files
     against a range of max thermal distances.
     """
     # --- Input folder to analyze ---
@@ -214,27 +209,27 @@ def main():
         print(f"No IGC files found in the folder: {folder_path}. Please check the path and try again.")
         return
 
-    # Define the range of merge distances to test
+    # Define the range of max thermal distances to test
     thermal_distances_to_test = np.arange(5, 105, 5)  # From 5km to 100km, in steps of 5km
-    total_transitions = []
+    total_thermal_counts = []
 
-    print("Starting analysis of thermal transitions vs. max thermal distance...")
+    print("Starting analysis of thermal count vs. max thermal distance...")
     for thermal_dist in thermal_distances_to_test:
-        total_transitions_for_dist = 0
+        total_thermals_for_dist = 0
         for filename in igc_files:
             thermals = find_thermals(filename, altitude_change_threshold, time_window, distance_threshold,
                                      max_gap_seconds)
-            transitions = count_thermal_transitions(thermals, thermal_dist, max_gliding_time_min)
-            total_transitions_for_dist += transitions
-        total_transitions.append(total_transitions_for_dist)
-        print(f"Max Thermal Distance {thermal_dist}km: Detected {total_transitions_for_dist} transitions")
+            filtered_thermals = filter_thermals_by_distance(thermals, thermal_dist)
+            total_thermals_for_dist += len(filtered_thermals)
+        total_thermal_counts.append(total_thermals_for_dist)
+        print(f"Max Thermal Distance {thermal_dist}km: Detected {total_thermals_for_dist} thermals")
 
     # Plot the results
     plt.figure(figsize=(10, 6))
-    plt.plot(thermal_distances_to_test, total_transitions, marker='o', linestyle='-', color='b')
-    plt.title('Total Thermal Transitions vs. Max Thermal Distance')
+    plt.plot(thermal_distances_to_test, total_thermal_counts, marker='o', linestyle='-', color='b')
+    plt.title('Total Thermals Detected vs. Max Thermal Distance')
     plt.xlabel('Max Thermal Distance (km)')
-    plt.ylabel('Total Number of Thermal Transitions')
+    plt.ylabel('Total Number of Thermals Detected')
     plt.grid(True)
     plt.show()
 
