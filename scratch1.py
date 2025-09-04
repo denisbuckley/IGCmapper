@@ -6,14 +6,14 @@ from scipy.spatial import ConvexHull
 
 # --- User-configurable variables ---
 # Heuristic parameters for identifying a sustained climb period.
+# Note: 'altitude_change_threshold' is now the variable we will iterate over.
 time_window = 30  # seconds to check for sustained climb
-altitude_change_threshold = 20  # meters
 # New parameter to merge lift segments separated by short gaps.
 max_gap_seconds = 20  # seconds, maximum time gap to consider two segments part of the same thermal
 # New parameter to filter out large distances that skew the distribution.
 max_thermal_distance_km = 20  # kilometers, maximum distance to consider between thermals
 # New parameter to group closely spaced thermals into a single event for distance calculation.
-max_merge_distance_km = 2  # kilometers, maximum distance to consider two thermals as a single event
+max_merge_distance_km = 5  # kilometers, maximum distance to consider two thermals as a single event
 # NEW: Filter out distances based on time. Prevents linking thermals separated by long breaks.
 max_gliding_time_min = 5  # minutes, max time gap between thermals to consider for distance calculation
 # NEW: Threshold for the circling check.
@@ -135,7 +135,7 @@ def is_circling(segment_points):
     return total_heading_change >= min_total_heading_change
 
 
-def find_thermals_and_sustained_lift(filepath):
+def find_thermals_and_sustained_lift(filepath, altitude_change_threshold):
     """
     Parses a single IGC file to find thermals (circling) and sustained lift (linear).
     Returns a list of circling thermal events and straight-flying thermals.
@@ -269,144 +269,40 @@ def find_thermals_and_sustained_lift(filepath):
 
 def main():
     """
-    Main function to analyze multiple IGC files and plot thermal distributions.
+    Main function to analyze the effect of altitude_change_threshold on thermal count.
+    It plots the total number of circling thermals detected across all files
+    against a range of thresholds.
     """
     # --- Input folder to analyze ---
     folder_path = "./igc"
 
+    # Filter for IGC files
     igc_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.lower().endswith('.igc')]
 
     if not igc_files:
         print(f"No IGC files found in the folder: {folder_path}. Please check the path and try again.")
         return
 
-    all_circling_strengths = []
-    all_straight_strengths = []
-    all_circling_distances = []
-    total_flight_duration_seconds = 0
-    total_flight_area_sq_m = 0
+    # Define the range of thresholds to test
+    thresholds_to_test = np.arange(20, 201, 5)  # From 20m to 100m, in steps of 5m
+    total_circling_thermal_counts = []
 
-    print("Starting multi-file thermal analysis...")
+    print("Starting analysis of circling thermal count vs. altitude threshold...")
+    for threshold in thresholds_to_test:
+        total_thermals_for_threshold = 0
+        for filename in igc_files:
+            circling_thermals, _, _, _ = find_thermals_and_sustained_lift(filename, altitude_change_threshold=threshold)
+            total_thermals_for_threshold += len(circling_thermals)
+        total_circling_thermal_counts.append(total_thermals_for_threshold)
+        print(f"Threshold {threshold}m: Detected {total_thermals_for_threshold} circling thermals")
 
-    for filename in igc_files:
-        print(f"Processing file: {filename}")
-        circling_thermals, straight_thermals, duration_s, flight_path_coords = find_thermals_and_sustained_lift(
-            filename)
-        total_flight_duration_seconds += duration_s
-
-        if flight_path_coords and len(flight_path_coords) >= 3:
-            points = np.array(flight_path_coords)
-            try:
-                hull = ConvexHull(points)
-                area_in_degrees = hull.area
-
-                avg_lat_rad = np.mean(points[:, 0]) * (math.pi / 180)
-                meters_per_lat_deg = 111132
-                meters_per_lon_deg = 111320 * math.cos(avg_lat_rad)
-                area_sq_m = area_in_degrees * meters_per_lat_deg * meters_per_lon_deg
-                total_flight_area_sq_m += area_sq_m
-
-            except Exception as e:
-                print(f"Could not calculate convex hull area for {filename}: {e}")
-
-        for thermal in circling_thermals:
-            if thermal['climb_rate'] > 0:
-                all_circling_strengths.append(thermal['climb_rate'])
-
-        for thermal in straight_thermals:
-            if thermal['climb_rate'] > 0:
-                all_straight_strengths.append(thermal['climb_rate'])
-
-        if len(circling_thermals) > 1:
-            for i in range(1, len(circling_thermals)):
-                location1 = circling_thermals[i - 1]['end_location']
-                location2 = circling_thermals[i]['start_location']
-                timestamp1 = circling_thermals[i - 1]['end_timestamp']
-                timestamp2 = circling_thermals[i]['start_timestamp']
-
-                distance = haversine_distance(
-                    location1[0], location1[1],
-                    location2[0], location2[1]
-                ) / 1000
-
-                time_gap_seconds = timestamp2 - timestamp1
-
-                if distance > max_merge_distance_km and \
-                        distance <= max_thermal_distance_km and \
-                        time_gap_seconds <= max_gliding_time_min * 60:
-                    all_circling_distances.append(distance)
-
-    filtered_circling_distances = [d for d in all_circling_distances if d <= max_thermal_distance_km]
-
-    print("\n--- Summary of all analyzed IGC files ---")
-    total_circling_thermals = len(all_circling_strengths)
-    total_straight_thermals = len(all_straight_strengths)
-
-    print(f"Total **Circling** thermals identified: {total_circling_thermals}")
-    print(f"Total **Straight** thermals identified: {total_straight_thermals}")
-
-    print("\n--- Thermal Strength Distribution ---")
-    if all_circling_strengths:
-        print("\n**Circling Thermals:**")
-        print(f"Average Strength: {np.mean(all_circling_strengths):.2f} m/s")
-        print(f"Median Strength: {np.median(all_circling_strengths):.2f} m/s")
-        print(f"Total Altitude Gained: {sum(t['altitude_gain'] for t in circling_thermals):.0f} m")
-
-    if all_straight_strengths:
-        print("\n**Straight Thermals (Sustained Lift):**")
-        print(f"Average Strength: {np.mean(all_straight_strengths):.2f} m/s")
-        print(f"Median Strength: {np.median(all_straight_strengths):.2f} m/s")
-        print(f"Total Altitude Gained: {sum(t['altitude_gain'] for t in straight_thermals):.0f} m")
-
-    print(
-        f"\n--- Distance Between Circling Thermals (Filtered with merge dist {max_merge_distance_km}km, max dist {max_thermal_distance_km}km, max time {max_gliding_time_min}min) ---")
-    if filtered_circling_distances:
-        average_distance_km = np.mean(filtered_circling_distances)
-        median_distance_km = np.median(filtered_circling_distances)
-        print(f"Average Distance: {average_distance_km:.2f} km")
-        print(f"Median Distance: {median_distance_km:.2f} km")
-        print(f"Standard Deviation: {np.std(filtered_circling_distances):.2f} km")
-
-        thermal_rate_per_km = 1 / average_distance_km if average_distance_km > 0 else 0
-        print(f"Calculated Linear Thermal Density: {thermal_rate_per_km:.2f} thermals/km")
-    else:
-        print("Not enough circling thermals to calculate distances after filtering.")
-
-    print("\n--- Thermal Spatial Density Analysis ---")
-    total_flight_area_sq_km = total_flight_area_sq_m / 1_000_000
-    if total_flight_area_sq_km > 0 and total_circling_thermals > 0:
-        spatial_poisson_lambda = total_circling_thermals / total_flight_area_sq_km
-        print(f"Total flight area (estimated): {total_flight_area_sq_km:.2f} km^2")
-        print(f"Calculated Spatial Poisson lambda (λ) parameter: {spatial_poisson_lambda:.5f} circling thermals/km^2")
-    else:
-        print("Not enough flight data or thermals to calculate spatial density.")
-
-    # --- Plot the distributions ---
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-
-    if all_circling_strengths:
-        axes[0].hist(all_circling_strengths, bins=20, density=True, color='skyblue', edgecolor='black', alpha=0.6,
-                     label='Circling Thermals')
-    if all_straight_strengths:
-        axes[0].hist(all_straight_strengths, bins=20, density=True, color='lightgreen', edgecolor='black', alpha=0.6,
-                     label='Straight Thermals')
-    axes[0].set_title('Probability Distribution of Thermal Strength')
-    axes[0].set_xlabel('Thermal Strength (Average Climb Rate in m/s)')
-    axes[0].set_ylabel('Probability Density')
-    axes[0].legend()
-    axes[0].grid(axis='y', alpha=0.75)
-
-    if filtered_circling_distances:
-        axes[1].hist(filtered_circling_distances, bins=15, density=True, color='lightgreen', edgecolor='black')
-        axes[1].set_title(f'Probability Distribution of Thermal Distance (filtered)')
-        axes[1].set_xlabel('Distance Between Circling Thermals (km)')
-        axes[1].set_ylabel('Probability Density')
-        axes[1].grid(axis='y', alpha=0.75)
-    else:
-        axes[1].set_title('Not enough circling thermals to plot distances after filtering')
-
-    plt.suptitle('Thermal Distribution Analysis Across All Flights')
-    plt.tight_layout()
+    # Plot the results
+    plt.figure(figsize=(10, 6))
+    plt.plot(thresholds_to_test, total_circling_thermal_counts, marker='o', linestyle='-', color='b')
+    plt.title('Total Circling Thermals Detected vs. Altitude Change Threshold')
+    plt.xlabel('Altitude Change Threshold (meters)')
+    plt.ylabel('Total Number of Circling Thermals Detected')
+    plt.grid(True)
     plt.show()
 
 
