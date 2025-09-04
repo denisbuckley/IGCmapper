@@ -5,38 +5,21 @@ import math
 from scipy.spatial import ConvexHull
 
 # --- User-configurable variables ---
-# Heuristic parameters for identifying a thermal (a sustained circling period).
-time_window = 30  # seconds to check for sustained climb and confined area
-distance_threshold = 500  # meters, max distance traveled in the time window
+# Heuristic parameters for identifying a sustained climb period.
+time_window = 30  # seconds to check for sustained climb
 altitude_change_threshold = 20  # meters
-# New parameter to merge thermal segments separated by short gaps.
+# New parameter to merge lift segments separated by short gaps.
 max_gap_seconds = 20  # seconds, maximum time gap to consider two segments part of the same thermal
 # New parameter to filter out large distances that skew the distribution.
 max_thermal_distance_km = 20  # kilometers, maximum distance to consider between thermals
 # New parameter to group closely spaced thermals into a single event for distance calculation.
-max_merge_distance_km = 5  # kilometers, maximum distance to consider two thermals as a single event
+max_merge_distance_km = 2  # kilometers, maximum distance to consider two thermals as a single event
 # NEW: Filter out distances based on time. Prevents linking thermals separated by long breaks.
 max_gliding_time_min = 5  # minutes, max time gap between thermals to consider for distance calculation
 # NEW: Threshold for the circling check.
 min_total_heading_change = 300  # degrees, the minimum total change in heading to qualify as a circle
-
-
-def get_heading(lat1, lon1, lat2, lon2):
-    """
-    Calculates the heading (bearing) in degrees between two points.
-    Returns a value from -180 to 180 degrees.
-    """
-    lat1_rad = math.radians(lat1)
-    lon1_rad = math.radians(lon1)
-    lat2_rad = math.radians(lat2)
-    lon2_rad = math.radians(lon2)
-
-    y = math.sin(lon2_rad - lon1_rad) * math.cos(lat2_rad)
-    x = math.cos(lat1_rad) * math.sin(lat2_rad) - math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(
-        lon2_rad - lon1_rad)
-
-    heading = math.atan2(y, x)
-    return math.degrees(heading)
+# A new distance threshold to distinguish between tight circling thermals and linear sustained lift.
+circling_distance_threshold = 300  # meters, max distance traveled in the time window for a circling thermal
 
 
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -56,6 +39,24 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
     return R * c
+
+
+def get_heading(lat1, lon1, lat2, lon2):
+    """
+    Calculates the heading (bearing) in degrees between two points.
+    Returns a value from -180 to 180 degrees.
+    """
+    lat1_rad = math.radians(lat1)
+    lon1_rad = math.radians(lon1)
+    lat2_rad = math.radians(lat2)
+    lon2_rad = math.radians(lon2)
+
+    y = math.sin(lon2_rad - lon1_rad) * math.cos(lat2_rad)
+    x = math.cos(lat1_rad) * math.sin(lat2_rad) - math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(
+        lon2_rad - lon1_rad)
+
+    heading = math.atan2(y, x)
+    return math.degrees(heading)
 
 
 def igc_to_decimal_degrees(igc_coord):
@@ -92,10 +93,52 @@ def time_to_seconds(time_str):
         return None
 
 
+def is_circling(segment_points):
+    """
+    Checks if a segment of flight data shows evidence of circling.
+    A segment is considered to be circling if the total heading change is
+    significant and the turns are mostly in a consistent direction.
+    """
+    if len(segment_points) < 3:
+        return False
+
+    total_heading_change = 0
+
+    # Calculate initial turn direction.
+    lat_p1, lon_p1 = segment_points[0][0], segment_points[0][1]
+    lat_p2, lon_p2 = segment_points[1][0], segment_points[1][1]
+    lat_p3, lon_p3 = segment_points[2][0], segment_points[2][1]
+
+    heading_1 = get_heading(lat_p1, lon_p1, lat_p2, lon_p2)
+    heading_2 = get_heading(lat_p2, lon_p2, lat_p3, lon_p3)
+    initial_delta_heading = (heading_2 - heading_1 + 180) % 360 - 180
+    turn_direction = 1 if initial_delta_heading >= 0 else -1
+    total_heading_change += abs(initial_delta_heading)
+
+    # Now, check the rest of the segment.
+    for i in range(2, len(segment_points) - 1):
+        lat_a, lon_a = segment_points[i - 2][0], segment_points[i - 2][1]
+        lat_b, lon_b = segment_points[i - 1][0], segment_points[i - 1][1]
+        lat_c, lon_c = segment_points[i][0], segment_points[i][1]
+
+        heading_ab = get_heading(lat_a, lon_a, lat_b, lon_b)
+        heading_bc = get_heading(lat_b, lon_b, lat_c, lon_c)
+
+        delta_heading = (heading_bc - heading_ab + 180) % 360 - 180
+
+        # Check for a consistent turn direction.
+        if turn_direction * delta_heading < 0 and abs(delta_heading) > 10:  # Allow for small wobbles
+            return False
+
+        total_heading_change += abs(delta_heading)
+
+    return total_heading_change >= min_total_heading_change
+
+
 def find_thermals_and_sustained_lift(filepath):
     """
     Parses a single IGC file to find thermals (circling) and sustained lift (linear).
-    Returns a list of thermal events, sustained lift segments, and flight path coordinates.
+    Returns a list of circling thermal events and straight-flying thermals.
     """
     try:
         latitudes = []
@@ -132,8 +175,8 @@ def find_thermals_and_sustained_lift(filepath):
             if altitude_diff > altitude_change_threshold:
                 sustained_lift_points_indices.append(i)
 
-        thermals_data = []
-        sustained_lift_data = []
+        circling_thermals = []
+        straight_thermals = []
 
         if not sustained_lift_points_indices:
             flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
@@ -163,38 +206,6 @@ def find_thermals_and_sustained_lift(filepath):
                         longitudes[start_index:end_index + 1]
                     ))
 
-                    # INLINED CIRCLING CHECK LOGIC
-                    is_circling = False
-                    if len(segment_points) >= 3:
-                        total_heading_change = 0
-                        lat_p1, lon_p1 = segment_points[0][0], segment_points[0][1]
-                        lat_p2, lon_p2 = segment_points[1][0], segment_points[1][1]
-                        lat_p3, lon_p3 = segment_points[2][0], segment_points[2][1]
-
-                        heading_1 = get_heading(lat_p1, lon_p1, lat_p2, lon_p2)
-                        heading_2 = get_heading(lat_p2, lon_p2, lat_p3, lon_p3)
-                        initial_delta_heading = (heading_2 - heading_1 + 180) % 360 - 180
-                        turn_direction = 1 if initial_delta_heading >= 0 else -1
-                        total_heading_change += abs(initial_delta_heading)
-
-                        for j in range(2, len(segment_points) - 1):
-                            lat_a, lon_a = segment_points[j - 2][0], segment_points[j - 2][1]
-                            lat_b, lon_b = segment_points[j - 1][0], segment_points[j - 1][1]
-                            lat_c, lon_c = segment_points[j][0], segment_points[j][1]
-
-                            heading_ab = get_heading(lat_a, lon_a, lat_b, lon_b)
-                            heading_bc = get_heading(lat_b, lon_b, lat_c, lon_c)
-
-                            delta_heading = (heading_bc - heading_ab + 180) % 360 - 180
-
-                            if turn_direction * delta_heading < 0 and abs(delta_heading) > 10:
-                                is_circling = False
-                                break
-
-                            total_heading_change += abs(delta_heading)
-                        else:
-                            is_circling = total_heading_change >= min_total_heading_change
-
                     segment = {
                         'start_location': (latitudes[start_index], longitudes[start_index]),
                         'end_location': (latitudes[end_index], longitudes[end_index]),
@@ -206,10 +217,10 @@ def find_thermals_and_sustained_lift(filepath):
                         if timestamps_seconds[end_index] > timestamps_seconds[start_index] else 0
                     }
 
-                    if distance_traveled < distance_threshold and is_circling:
-                        thermals_data.append(segment)
+                    if is_circling(segment_points) and distance_traveled < circling_distance_threshold:
+                        circling_thermals.append(segment)
                     else:
-                        sustained_lift_data.append(segment)
+                        straight_thermals.append(segment)
 
                 current_segment_indices = [current_point_index]
 
@@ -228,38 +239,6 @@ def find_thermals_and_sustained_lift(filepath):
                 longitudes[start_index:end_index + 1]
             ))
 
-            # INLINED CIRCLING CHECK LOGIC
-            is_circling = False
-            if len(segment_points) >= 3:
-                total_heading_change = 0
-                lat_p1, lon_p1 = segment_points[0][0], segment_points[0][1]
-                lat_p2, lon_p2 = segment_points[1][0], segment_points[1][1]
-                lat_p3, lon_p3 = segment_points[2][0], segment_points[2][1]
-
-                heading_1 = get_heading(lat_p1, lon_p1, lat_p2, lon_p2)
-                heading_2 = get_heading(lat_p2, lon_p2, lat_p3, lon_p3)
-                initial_delta_heading = (heading_2 - heading_1 + 180) % 360 - 180
-                turn_direction = 1 if initial_delta_heading >= 0 else -1
-                total_heading_change += abs(initial_delta_heading)
-
-                for j in range(2, len(segment_points) - 1):
-                    lat_a, lon_a = segment_points[j - 2][0], segment_points[j - 2][1]
-                    lat_b, lon_b = segment_points[j - 1][0], segment_points[j - 1][1]
-                    lat_c, lon_c = segment_points[j][0], segment_points[j][1]
-
-                    heading_ab = get_heading(lat_a, lon_a, lat_b, lon_b)
-                    heading_bc = get_heading(lat_b, lon_b, lat_c, lon_c)
-
-                    delta_heading = (heading_bc - heading_ab + 180) % 360 - 180
-
-                    if turn_direction * delta_heading < 0 and abs(delta_heading) > 10:
-                        is_circling = False
-                        break
-
-                    total_heading_change += abs(delta_heading)
-                else:
-                    is_circling = total_heading_change >= min_total_heading_change
-
             segment = {
                 'start_location': (latitudes[start_index], longitudes[start_index]),
                 'end_location': (latitudes[end_index], longitudes[end_index]),
@@ -271,15 +250,15 @@ def find_thermals_and_sustained_lift(filepath):
                 if timestamps_seconds[end_index] > timestamps_seconds[start_index] else 0
             }
 
-            if distance_traveled < distance_threshold and is_circling:
-                thermals_data.append(segment)
+            if is_circling(segment_points) and distance_traveled < circling_distance_threshold:
+                circling_thermals.append(segment)
             else:
-                sustained_lift_data.append(segment)
+                straight_thermals.append(segment)
 
         flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
         flight_path = list(zip(latitudes, longitudes))
 
-        return thermals_data, sustained_lift_data, flight_duration, flight_path
+        return circling_thermals, straight_thermals, flight_duration, flight_path
     except FileNotFoundError:
         print(f"Error: The file at '{filepath}' was not found.")
         return [], [], 0, []
@@ -301,9 +280,9 @@ def main():
         print(f"No IGC files found in the folder: {folder_path}. Please check the path and try again.")
         return
 
-    all_thermal_strengths = []
-    all_thermal_distances = []
-    all_sustained_lift_distances = []
+    all_circling_strengths = []
+    all_straight_strengths = []
+    all_circling_distances = []
     total_flight_duration_seconds = 0
     total_flight_area_sq_m = 0
 
@@ -311,7 +290,8 @@ def main():
 
     for filename in igc_files:
         print(f"Processing file: {filename}")
-        thermals, sustained_lift_segments, duration_s, flight_path_coords = find_thermals_and_sustained_lift(filename)
+        circling_thermals, straight_thermals, duration_s, flight_path_coords = find_thermals_and_sustained_lift(
+            filename)
         total_flight_duration_seconds += duration_s
 
         if flight_path_coords and len(flight_path_coords) >= 3:
@@ -329,16 +309,20 @@ def main():
             except Exception as e:
                 print(f"Could not calculate convex hull area for {filename}: {e}")
 
-        for thermal in thermals:
+        for thermal in circling_thermals:
             if thermal['climb_rate'] > 0:
-                all_thermal_strengths.append(thermal['climb_rate'])
+                all_circling_strengths.append(thermal['climb_rate'])
 
-        if len(thermals) > 1:
-            for i in range(1, len(thermals)):
-                location1 = thermals[i - 1]['end_location']
-                location2 = thermals[i]['start_location']
-                timestamp1 = thermals[i - 1]['end_timestamp']
-                timestamp2 = thermals[i]['start_timestamp']
+        for thermal in straight_thermals:
+            if thermal['climb_rate'] > 0:
+                all_straight_strengths.append(thermal['climb_rate'])
+
+        if len(circling_thermals) > 1:
+            for i in range(1, len(circling_thermals)):
+                location1 = circling_thermals[i - 1]['end_location']
+                location2 = circling_thermals[i]['start_location']
+                timestamp1 = circling_thermals[i - 1]['end_timestamp']
+                timestamp2 = circling_thermals[i]['start_timestamp']
 
                 distance = haversine_distance(
                     location1[0], location1[1],
@@ -350,81 +334,76 @@ def main():
                 if distance > max_merge_distance_km and \
                         distance <= max_thermal_distance_km and \
                         time_gap_seconds <= max_gliding_time_min * 60:
-                    all_thermal_distances.append(distance)
+                    all_circling_distances.append(distance)
 
-        for i in range(1, len(sustained_lift_segments)):
-            start_lat1, start_lon1 = sustained_lift_segments[i - 1]['start_location']
-            start_lat2, start_lon2 = sustained_lift_segments[i]['start_location']
-            distance = haversine_distance(start_lat1, start_lon1, start_lat2, start_lon2)
-            all_sustained_lift_distances.append(distance / 1000)
-
-    filtered_thermal_distances = [d for d in all_thermal_distances if d <= max_thermal_distance_km]
+    filtered_circling_distances = [d for d in all_circling_distances if d <= max_thermal_distance_km]
 
     print("\n--- Summary of all analyzed IGC files ---")
-    total_thermals = len(all_thermal_strengths)
-    print(f"Total thermals identified across all files: {total_thermals}")
+    total_circling_thermals = len(all_circling_strengths)
+    total_straight_thermals = len(all_straight_strengths)
 
-    if not all_thermal_strengths:
-        print("No thermals were identified in any of the provided files. Cannot perform analysis.")
+    print(f"Total **Circling** thermals identified: {total_circling_thermals}")
+    print(f"Total **Straight** thermals identified: {total_straight_thermals}")
+
+    print("\n--- Thermal Strength Distribution ---")
+    if all_circling_strengths:
+        print("\n**Circling Thermals:**")
+        print(f"Average Strength: {np.mean(all_circling_strengths):.2f} m/s")
+        print(f"Median Strength: {np.median(all_circling_strengths):.2f} m/s")
+        print(f"Total Altitude Gained: {sum(t['altitude_gain'] for t in circling_thermals):.0f} m")
+
+    if all_straight_strengths:
+        print("\n**Straight Thermals (Sustained Lift):**")
+        print(f"Average Strength: {np.mean(all_straight_strengths):.2f} m/s")
+        print(f"Median Strength: {np.median(all_straight_strengths):.2f} m/s")
+        print(f"Total Altitude Gained: {sum(t['altitude_gain'] for t in straight_thermals):.0f} m")
+
+    print(
+        f"\n--- Distance Between Circling Thermals (Filtered with merge dist {max_merge_distance_km}km, max dist {max_thermal_distance_km}km, max time {max_gliding_time_min}min) ---")
+    if filtered_circling_distances:
+        average_distance_km = np.mean(filtered_circling_distances)
+        median_distance_km = np.median(filtered_circling_distances)
+        print(f"Average Distance: {average_distance_km:.2f} km")
+        print(f"Median Distance: {median_distance_km:.2f} km")
+        print(f"Standard Deviation: {np.std(filtered_circling_distances):.2f} km")
+
+        thermal_rate_per_km = 1 / average_distance_km if average_distance_km > 0 else 0
+        print(f"Calculated Linear Thermal Density: {thermal_rate_per_km:.2f} thermals/km")
     else:
-        print("\n--- Thermal Strength Distribution ---")
-        average_strength = np.mean(all_thermal_strengths)
-        print(f"Average Strength: {average_strength:.2f} m/s")
-        print(f"Median Strength: {np.median(all_thermal_strengths):.2f} m/s")
-        print(f"Standard Deviation: {np.std(all_thermal_strengths):.2f} m/s")
+        print("Not enough circling thermals to calculate distances after filtering.")
 
-        exponential_lambda = 1 / average_strength if average_strength > 0 else 0
-        print(f"Calculated Exponential lambda (λ) parameter: {exponential_lambda:.4f}")
-
-        print(
-            f"\n--- Distance Between Thermals Distribution (Filtered with merge dist {max_merge_distance_km}km, max dist {max_thermal_distance_km}km, max time {max_gliding_time_min}min) ---")
-        if filtered_thermal_distances:
-            average_distance_km = np.mean(filtered_thermal_distances)
-            median_distance_km = np.median(filtered_thermal_distances)
-            print(f"Average Distance: {average_distance_km:.2f} km")
-            print(f"Median Distance: {median_distance_km:.2f} km")
-            print(f"Standard Deviation: {np.std(filtered_thermal_distances):.2f} km")
-
-            thermal_rate_per_km = 1 / average_distance_km if average_distance_km > 0 else 0
-            print(f"Calculated Linear Thermal Density: {thermal_rate_per_km:.2f} thermals/km")
-        else:
-            print("Not enough thermals to calculate distances after filtering.")
-
-        print("\n--- Thermal Spatial Density Analysis ---")
-        total_flight_area_sq_km = total_flight_area_sq_m / 1_000_000
-        if total_flight_area_sq_km > 0 and total_thermals > 0:
-            spatial_poisson_lambda = total_thermals / total_flight_area_sq_km
-            print(f"Total flight area (estimated): {total_flight_area_sq_km:.2f} km^2")
-            print(f"Calculated Spatial Poisson lambda (λ) parameter: {spatial_poisson_lambda:.5f} thermals/km^2")
-        else:
-            print("Not enough flight data to calculate thermal spatial density.")
-
-    print("\n--- Sustained Lift Segment Analysis (Non-Circling) ---")
-    total_sustained_segments = len(all_sustained_lift_distances) + 1 if len(all_sustained_lift_distances) > 0 else 0
-    print(f"Total sustained lift segments identified: {total_sustained_segments}")
-    if all_sustained_lift_distances:
-        average_sustained_distance_km = np.mean(all_sustained_lift_distances)
-        print(f"Average Distance Between Segments: {average_sustained_distance_km:.2f} km")
+    print("\n--- Thermal Spatial Density Analysis ---")
+    total_flight_area_sq_km = total_flight_area_sq_m / 1_000_000
+    if total_flight_area_sq_km > 0 and total_circling_thermals > 0:
+        spatial_poisson_lambda = total_circling_thermals / total_flight_area_sq_km
+        print(f"Total flight area (estimated): {total_flight_area_sq_km:.2f} km^2")
+        print(f"Calculated Spatial Poisson lambda (λ) parameter: {spatial_poisson_lambda:.5f} circling thermals/km^2")
     else:
-        print("Not enough sustained lift segments to calculate distances.")
+        print("Not enough flight data or thermals to calculate spatial density.")
 
     # --- Plot the distributions ---
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
-    axes[0].hist(all_thermal_strengths, bins=50, density=True, color='skyblue', edgecolor='black')
+    if all_circling_strengths:
+        axes[0].hist(all_circling_strengths, bins=20, density=True, color='skyblue', edgecolor='black', alpha=0.6,
+                     label='Circling Thermals')
+    if all_straight_strengths:
+        axes[0].hist(all_straight_strengths, bins=20, density=True, color='lightgreen', edgecolor='black', alpha=0.6,
+                     label='Straight Thermals')
     axes[0].set_title('Probability Distribution of Thermal Strength')
     axes[0].set_xlabel('Thermal Strength (Average Climb Rate in m/s)')
     axes[0].set_ylabel('Probability Density')
+    axes[0].legend()
     axes[0].grid(axis='y', alpha=0.75)
 
-    if filtered_thermal_distances:
-        axes[1].hist(filtered_thermal_distances, bins=15, density=True, color='lightgreen', edgecolor='black')
+    if filtered_circling_distances:
+        axes[1].hist(filtered_circling_distances, bins=15, density=True, color='lightgreen', edgecolor='black')
         axes[1].set_title(f'Probability Distribution of Thermal Distance (filtered)')
-        axes[1].set_xlabel('Distance Between Thermals (km)')
+        axes[1].set_xlabel('Distance Between Circling Thermals (km)')
         axes[1].set_ylabel('Probability Density')
         axes[1].grid(axis='y', alpha=0.75)
     else:
-        axes[1].set_title('Not enough thermals to plot distances after filtering')
+        axes[1].set_title('Not enough circling thermals to plot distances after filtering')
 
     plt.suptitle('Thermal Distribution Analysis Across All Flights')
     plt.tight_layout()
