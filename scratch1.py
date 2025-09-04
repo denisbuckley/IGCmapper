@@ -5,13 +5,13 @@ import math
 from scipy.spatial import ConvexHull
 
 # --- User-configurable variables ---
-# Heuristic parameters for identifying a sustained climb period.
-# Note: 'altitude_change_threshold' is now a constant in the main function.
-# New parameter to merge lift segments separated by short gaps.
+# Note: 'time_window', 'max_gap_seconds', and 'altitude_change_threshold'
+# are now constants in the main function.
 max_gap_seconds = 20  # seconds, maximum time gap to consider two segments part of the same thermal
 # New parameter to filter out large distances that skew the distribution.
 max_thermal_distance_km = 20  # kilometers, maximum distance to consider between thermals
 # New parameter to group closely spaced thermals into a single event for distance calculation.
+# Note: This is the parameter we will iterate over.
 max_merge_distance_km = 5  # kilometers, maximum distance to consider two thermals as a single event
 # NEW: Filter out distances based on time. Prevents linking thermals separated by long breaks.
 max_gliding_time_min = 5  # minutes, max time gap between thermals to consider for distance calculation
@@ -266,11 +266,43 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_w
         return [], [], 0, []
 
 
+def merge_thermals(thermals, max_merge_distance_km):
+    """
+    Merges closely spaced thermals into single events based on a maximum distance threshold.
+    """
+    if not thermals:
+        return []
+
+    merged_events = []
+    current_event = thermals[0]
+
+    for i in range(1, len(thermals)):
+        next_thermal = thermals[i]
+        distance_between_thermals = haversine_distance(
+            current_event['end_location'][0], current_event['end_location'][1],
+            next_thermal['start_location'][0], next_thermal['start_location'][1]
+        ) / 1000  # Convert to km
+
+        if distance_between_thermals <= max_merge_distance_km:
+            # Merge the next thermal into the current event
+            current_event['end_location'] = next_thermal['end_location']
+            current_event['end_timestamp'] = next_thermal['end_timestamp']
+            current_event['altitude_gain'] += next_thermal['altitude_gain']
+        else:
+            # Start a new event
+            merged_events.append(current_event)
+            current_event = next_thermal
+
+    # Add the last event
+    merged_events.append(current_event)
+    return merged_events
+
+
 def main():
     """
-    Main function to analyze the effect of a time_window on thermal count.
+    Main function to analyze the effect of a max_merge_distance_km on thermal count.
     It plots the total number of circling thermals detected across all files
-    against a range of time windows.
+    against a range of merge distances.
     """
     # --- Input folder to analyze ---
     folder_path = "./igc"
@@ -282,32 +314,36 @@ def main():
         print(f"No IGC files found in the folder: {folder_path}. Please check the path and try again.")
         return
 
-    # Define the constant altitude threshold
+    # Define the constant parameters
     altitude_change_threshold = 50  # meters
+    time_window = 10  # seconds
 
-    # Define the range of time windows to test
-    time_windows_to_test = np.arange(5, 51, 5)  # From 5s to 50s, in steps of 5s
+    # Define the range of merge distances to test
+    merge_distances_to_test = np.arange(1, 11, 1)  # From 1km to 10km, in steps of 1km
     total_circling_thermal_counts = []
 
-    print(f"Starting analysis of circling thermal count vs. time window (altitude threshold constant at {altitude_change_threshold}m)...")
-    for time_window in time_windows_to_test:
-        total_thermals_for_window = 0
+    print(f"Starting analysis of circling thermal count vs. merge distance...")
+    print(
+        f"Parameters: altitude_change_threshold={altitude_change_threshold}m, time_window={time_window}s, max_gap_seconds={max_gap_seconds}s")
+    for merge_distance in merge_distances_to_test:
+        total_thermals_for_distance = 0
         for filename in igc_files:
             circling_thermals, _, _, _ = find_thermals_and_sustained_lift(
                 filename,
                 altitude_change_threshold=altitude_change_threshold,
                 time_window=time_window
             )
-            total_thermals_for_window += len(circling_thermals)
-        total_circling_thermal_counts.append(total_thermals_for_window)
-        print(f"Time Window {time_window}s: Detected {total_thermals_for_window} circling thermals")
+            merged_thermals = merge_thermals(circling_thermals, max_merge_distance_km=merge_distance)
+            total_thermals_for_distance += len(merged_thermals)
+        total_circling_thermal_counts.append(total_thermals_for_distance)
+        print(f"Merge Distance {merge_distance}km: Detected {total_thermals_for_distance} circling thermals")
 
     # Plot the results
     plt.figure(figsize=(10, 6))
-    plt.plot(time_windows_to_test, total_circling_thermal_counts, marker='o', linestyle='-', color='b')
-    plt.title('Total Circling Thermals Detected vs. Time Window')
-    plt.xlabel('Time Window (seconds)')
-    plt.ylabel('Total Number of Circling Thermals Detected')
+    plt.plot(merge_distances_to_test, total_circling_thermal_counts, marker='o', linestyle='-', color='b')
+    plt.title('Total Circling Thermals Detected vs. Thermal Merge Distance')
+    plt.xlabel('Max Thermal Merge Distance (km)')
+    plt.ylabel('Total Number of Merged Thermal Events Detected')
     plt.grid(True)
     plt.show()
 
