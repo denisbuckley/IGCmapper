@@ -20,11 +20,11 @@ time_window = 30  # seconds to check for sustained climb and confined area
 distance_threshold = 300  # meters, max distance traveled in the time window
 altitude_change_threshold = 20  # meters
 # New parameter to merge thermal segments separated by short gaps.
-max_gap_seconds = 90  # seconds, maximum time gap to consider two segments part of the same thermal
+max_gap_seconds = 20  # seconds, maximum time gap to consider two segments part of the same thermal
 # New parameter to filter out large distances that skew the distribution.
-max_thermal_distance_km = 20  # kilometers, maximum distance to consider between thermals
+max_thermal_distance_km = 10  # kilometers, maximum distance to consider between thermals
 # New parameter to group closely spaced thermals into a single event for distance calculation.
-max_merge_distance_km = 5  # kilometers, maximum distance to consider two thermals as a single event
+max_merge_distance_km = 2.5  # kilometers, maximum distance to consider two thermals as a single event
 # NEW: Filter out distances based on time. Prevents linking thermals separated by long breaks.
 max_gliding_time_min = 5  # minutes, max time gap between thermals to consider for distance calculation
 
