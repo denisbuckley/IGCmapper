@@ -6,8 +6,7 @@ from scipy.spatial import ConvexHull
 
 # --- User-configurable variables ---
 # Heuristic parameters for identifying a sustained climb period.
-# Note: 'altitude_change_threshold' is now the variable we will iterate over.
-time_window = 30  # seconds to check for sustained climb
+# Note: 'altitude_change_threshold' is now a constant in the main function.
 # New parameter to merge lift segments separated by short gaps.
 max_gap_seconds = 20  # seconds, maximum time gap to consider two segments part of the same thermal
 # New parameter to filter out large distances that skew the distribution.
@@ -135,7 +134,7 @@ def is_circling(segment_points):
     return total_heading_change >= min_total_heading_change
 
 
-def find_thermals_and_sustained_lift(filepath, altitude_change_threshold):
+def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_window):
     """
     Parses a single IGC file to find thermals (circling) and sustained lift (linear).
     Returns a list of circling thermal events and straight-flying thermals.
@@ -269,9 +268,9 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold):
 
 def main():
     """
-    Main function to analyze the effect of altitude_change_threshold on thermal count.
+    Main function to analyze the effect of a time_window on thermal count.
     It plots the total number of circling thermals detected across all files
-    against a range of thresholds.
+    against a range of time windows.
     """
     # --- Input folder to analyze ---
     folder_path = "./igc"
@@ -283,24 +282,31 @@ def main():
         print(f"No IGC files found in the folder: {folder_path}. Please check the path and try again.")
         return
 
-    # Define the range of thresholds to test
-    thresholds_to_test = np.arange(20, 201, 5)  # From 20m to 100m, in steps of 5m
+    # Define the constant altitude threshold
+    altitude_change_threshold = 50  # meters
+
+    # Define the range of time windows to test
+    time_windows_to_test = np.arange(5, 51, 5)  # From 5s to 50s, in steps of 5s
     total_circling_thermal_counts = []
 
-    print("Starting analysis of circling thermal count vs. altitude threshold...")
-    for threshold in thresholds_to_test:
-        total_thermals_for_threshold = 0
+    print(f"Starting analysis of circling thermal count vs. time window (altitude threshold constant at {altitude_change_threshold}m)...")
+    for time_window in time_windows_to_test:
+        total_thermals_for_window = 0
         for filename in igc_files:
-            circling_thermals, _, _, _ = find_thermals_and_sustained_lift(filename, altitude_change_threshold=threshold)
-            total_thermals_for_threshold += len(circling_thermals)
-        total_circling_thermal_counts.append(total_thermals_for_threshold)
-        print(f"Threshold {threshold}m: Detected {total_thermals_for_threshold} circling thermals")
+            circling_thermals, _, _, _ = find_thermals_and_sustained_lift(
+                filename,
+                altitude_change_threshold=altitude_change_threshold,
+                time_window=time_window
+            )
+            total_thermals_for_window += len(circling_thermals)
+        total_circling_thermal_counts.append(total_thermals_for_window)
+        print(f"Time Window {time_window}s: Detected {total_thermals_for_window} circling thermals")
 
     # Plot the results
     plt.figure(figsize=(10, 6))
-    plt.plot(thresholds_to_test, total_circling_thermal_counts, marker='o', linestyle='-', color='b')
-    plt.title('Total Circling Thermals Detected vs. Altitude Change Threshold')
-    plt.xlabel('Altitude Change Threshold (meters)')
+    plt.plot(time_windows_to_test, total_circling_thermal_counts, marker='o', linestyle='-', color='b')
+    plt.title('Total Circling Thermals Detected vs. Time Window')
+    plt.xlabel('Time Window (seconds)')
     plt.ylabel('Total Number of Circling Thermals Detected')
     plt.grid(True)
     plt.show()
