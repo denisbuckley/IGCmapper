@@ -1,6 +1,8 @@
 # This script analyzes multiple IGC files to determine the relationship
-# between the 'altitude_change_threshold' and the number of thermals detected.
-# It plots the total number of thermals against the threshold value.
+# between the 'time_window' and the number of thermals detected.
+# It plots the total number of thermals against the time window value.
+#
+# The 'altitude_change_threshold' is held constant at 73m for this analysis.
 #
 # Required libraries: matplotlib, numpy, scipy
 # Install with: pip install matplotlib numpy scipy
@@ -12,11 +14,11 @@ import os
 import math
 from scipy.spatial import ConvexHull
 
-# --- User-configurable variables (used as defaults for the analysis) ---
-# Heuristic parameters for identifying a thermal (a sustained circling period).
-time_window = 30  # seconds to check for sustained climb and confined area
+# --- User-configurable variables ---
+# These parameters will be used as defaults, except for time_window.
 distance_threshold = 300  # meters, max distance traveled in the time window
-# altitude_change_threshold is now the variable we will plot against.
+# Altitude change threshold is now constant at 73m.
+altitude_change_threshold = 73  # meters
 # New parameter to merge thermal segments separated by short gaps.
 max_gap_seconds = 20  # seconds, maximum time gap to consider two segments part of the same thermal
 # New parameter to filter out large distances that skew the distribution.
@@ -79,7 +81,7 @@ def time_to_seconds(time_str):
         return None
 
 
-def find_thermals_and_sustained_lift(filepath, altitude_change_threshold):
+def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_window):
     """
     Parses a single IGC file to find thermals (circling) and sustained lift (linear).
     Returns a list of thermal events, sustained lift segments, and flight path coordinates.
@@ -206,8 +208,8 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold):
 
 def main():
     """
-    Main function to analyze the effect of altitude_change_threshold.
-    It plots the total number of thermals detected across all files against a range of thresholds.
+    Main function to analyze the effect of time_window.
+    It plots the total number of thermals detected across all files against a range of time windows.
     """
     # --- Input folder to analyze ---
     folder_path = "./igc"
@@ -219,24 +221,24 @@ def main():
         print(f"No IGC files found in the folder: {folder_path}. Please check the path and try again.")
         return
 
-    # Define the range of thresholds to test
-    thresholds_to_test = np.arange(30, 101, 1)  # From 30m to 100m, in steps of 1m
+    # Define the range of time windows to test
+    time_windows_to_test = np.arange(10, 101, 10)  # From 10s to 100s, in steps of 10s
     total_thermal_counts = []
 
-    print("Starting analysis of thermal count vs. altitude threshold...")
-    for threshold in thresholds_to_test:
-        total_thermals_for_threshold = 0
+    print("Starting analysis of thermal count vs. time window...")
+    for time_window in time_windows_to_test:
+        total_thermals_for_window = 0
         for filename in igc_files:
-            thermals, _, _, _ = find_thermals_and_sustained_lift(filename, altitude_change_threshold=threshold)
-            total_thermals_for_threshold += len(thermals)
-        total_thermal_counts.append(total_thermals_for_threshold)
-        print(f"Threshold {threshold}m: Detected {total_thermals_for_threshold} thermals")
+            thermals, _, _, _ = find_thermals_and_sustained_lift(filename, altitude_change_threshold, time_window)
+            total_thermals_for_window += len(thermals)
+        total_thermal_counts.append(total_thermals_for_window)
+        print(f"Time Window {time_window}s: Detected {total_thermals_for_window} thermals")
 
     # Plot the results
     plt.figure(figsize=(10, 6))
-    plt.plot(thresholds_to_test, total_thermal_counts, marker='o', linestyle='-', color='b')
-    plt.title('Total Thermals Detected vs. Altitude Change Threshold')
-    plt.xlabel('Altitude Change Threshold (meters)')
+    plt.plot(time_windows_to_test, total_thermal_counts, marker='o', linestyle='-', color='b')
+    plt.title('Total Thermals Detected vs. Time Window')
+    plt.xlabel('Time Window (seconds)')
     plt.ylabel('Total Number of Thermals Detected')
     plt.grid(True)
     plt.show()
