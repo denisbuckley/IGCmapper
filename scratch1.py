@@ -14,15 +14,19 @@ import os
 import math
 from scipy.spatial import ConvexHull
 
-# --- DEFAULT CONFIGURATION VARIABLES ---
-# These values will be used as the default if the user presses Enter.
-DEFAULT_TIME_WINDOW = 50  # seconds
-DEFAULT_DISTANCE_THRESHOLD = 500  # meters
-DEFAULT_ALTITUDE_CHANGE_THRESHOLD = 50  # meters
-DEFAULT_MAX_GAP_SECONDS = 50  # seconds
-DEFAULT_MAX_THERMAL_DISTANCE_KM = 100  # kilometers
-DEFAULT_MAX_MERGE_DISTANCE_KM = 5  # kilometers
-DEFAULT_MAX_GLIDING_TIME_MIN = 30  # minutes
+# --- User-configurable variables ---
+# Heuristic parameters for identifying a thermal (a sustained circling period).
+time_window = 30  # seconds to check for sustained climb and confined area
+distance_threshold = 300  # meters, max distance traveled in the time window
+altitude_change_threshold = 20  # meters
+# New parameter to merge thermal segments separated by short gaps.
+max_gap_seconds = 90  # seconds, maximum time gap to consider two segments part of the same thermal
+# New parameter to filter out large distances that skew the distribution.
+max_thermal_distance_km = 20  # kilometers, maximum distance to consider between thermals
+# New parameter to group closely spaced thermals into a single event for distance calculation.
+max_merge_distance_km = 5  # kilometers, maximum distance to consider two thermals as a single event
+# NEW: Filter out distances based on time. Prevents linking thermals separated by long breaks.
+max_gliding_time_min = 5  # minutes, max time gap between thermals to consider for distance calculation
 
 
 def igc_to_decimal_degrees(igc_coord):
@@ -76,7 +80,7 @@ def time_to_seconds(time_str):
         return None
 
 
-def find_thermals_and_sustained_lift(filepath, time_window, distance_threshold, altitude_change_threshold, max_gap_seconds):
+def find_thermals_and_sustained_lift(filepath):
     """
     Parses a single IGC file to find thermals (circling) and sustained lift (linear).
     Returns a list of thermal events, sustained lift segments, and flight path coordinates.
@@ -206,19 +210,6 @@ def main():
     """
     Main function to analyze multiple IGC files and plot thermal distributions.
     """
-    # --- Get user input for parameters with default values ---
-    try:
-        time_window = int(input(f"Enter time window for thermal detection in seconds (default: {DEFAULT_TIME_WINDOW}): ") or DEFAULT_TIME_WINDOW)
-        distance_threshold = int(input(f"Enter max distance traveled in meters (default: {DEFAULT_DISTANCE_THRESHOLD}): ") or DEFAULT_DISTANCE_THRESHOLD)
-        altitude_change_threshold = int(input(f"Enter min altitude gain in meters (default: {DEFAULT_ALTITUDE_CHANGE_THRESHOLD}): ") or DEFAULT_ALTITUDE_CHANGE_THRESHOLD)
-        max_gap_seconds = int(input(f"Enter max time gap in seconds to merge segments (default: {DEFAULT_MAX_GAP_SECONDS}): ") or DEFAULT_MAX_GAP_SECONDS)
-        max_thermal_distance_km = float(input(f"Enter max distance in km to consider between thermals (default: {DEFAULT_MAX_THERMAL_DISTANCE_KM}): ") or DEFAULT_MAX_THERMAL_DISTANCE_KM)
-        max_merge_distance_km = float(input(f"Enter max distance in km to merge thermals (default: {DEFAULT_MAX_MERGE_DISTANCE_KM}): ") or DEFAULT_MAX_MERGE_DISTANCE_KM)
-        max_gliding_time_min = float(input(f"Enter max time gap in minutes for distance calculation (default: {DEFAULT_MAX_GLIDING_TIME_MIN}): ") or DEFAULT_MAX_GLIDING_TIME_MIN)
-    except ValueError:
-        print("Invalid input. Please enter a number for the numeric parameters. Exiting.")
-        return
-
     # --- Input folder to analyze ---
     # Put your IGC files in a folder named 'igc' in the same directory as this script.
     folder_path = "./igc"
@@ -236,13 +227,11 @@ def main():
     total_flight_duration_seconds = 0
     total_flight_area_sq_m = 0
 
-    print("\nStarting multi-file thermal analysis...")
+    print("Starting multi-file thermal analysis...")
 
     for filename in igc_files:
         print(f"Processing file: {filename}")
-        thermals, sustained_lift_segments, duration_s, flight_path_coords = find_thermals_and_sustained_lift(
-            filename, time_window, distance_threshold, altitude_change_threshold, max_gap_seconds
-        )
+        thermals, sustained_lift_segments, duration_s, flight_path_coords = find_thermals_and_sustained_lift(filename)
         total_flight_duration_seconds += duration_s
 
         if flight_path_coords and len(flight_path_coords) >= 3:
@@ -384,7 +373,17 @@ def main():
         axes[1].set_title('Not enough thermals to plot distances after filtering')
 
     plt.suptitle('Thermal Distribution Analysis Across All Flights')
-    plt.tight_layout()
+
+    # Add text box for the parameter values at the bottom of the figure
+    param_text = (
+        f"Parameters Used:\n"
+        f"Time Window: {time_window}s, Distance Threshold: {distance_threshold}m, Altitude Gain: {altitude_change_threshold}m\n"
+        f"Merge Gap: {max_gap_seconds}s, Max Thermal Distance: {max_thermal_distance_km}km, Merge Distance: {max_merge_distance_km}km\n"
+        f"Max Gliding Time: {max_gliding_time_min}min"
+    )
+    plt.figtext(0.5, 0.01, param_text, ha="center", fontsize=10, bbox={"facecolor": "white", "alpha": 0.5, "pad": 5})
+
+    plt.tight_layout(rect=[0, 0.05, 1, 1])
     plt.show()
 
 
