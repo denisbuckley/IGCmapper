@@ -304,6 +304,8 @@ def main():
     print("\n--- Summary of all analyzed IGC files ---")
     total_thermals = len(all_thermal_strengths)
     print(f"Total thermals identified across all files: {total_thermals}")
+    print(
+        f"Thermals included in distance analysis (after filtering): {len(filtered_thermal_distances)} [{total_thermals}]")
 
     if not all_thermal_strengths:
         print("No thermals were identified in any of the provided files. Cannot perform analysis.")
@@ -365,7 +367,8 @@ def main():
     # Plot 2: Distance Between Thermals Distribution
     if filtered_thermal_distances:
         axes[1].hist(filtered_thermal_distances, bins=15, density=True, color='lightgreen', edgecolor='black')
-        axes[1].set_title(f'Probability Distribution of Thermal Distance (filtered)')
+        axes[1].set_title(
+            f'Probability Distribution of Thermal Distance ({len(filtered_thermal_distances)} [{total_thermals}] thermals)')
         axes[1].set_xlabel('Distance Between Thermals (km)')
         axes[1].set_ylabel('Probability Density')
         axes[1].grid(axis='y', alpha=0.75)
