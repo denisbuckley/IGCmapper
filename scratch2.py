@@ -1,9 +1,10 @@
 # This script analyzes multiple IGC files to determine the relationship
-# between the 'max_gap_seconds' and the number of thermals detected.
-# It plots the total number of thermals against the max gap value.
+# between the 'max_gap_seconds' and the number of thermals detected,
+# for several different 'distance_threshold' values.
+# It plots the total number of thermals against the max gap value,
+# with a separate line for each distance threshold.
 #
-# The 'time_window', 'distance_threshold', and 'altitude_change_threshold'
-# are held constant for this analysis.
+# The 'time_window' and 'altitude_change_threshold' are held constant.
 #
 # Required libraries: matplotlib, numpy, scipy
 # Install with: pip install matplotlib numpy scipy
@@ -18,7 +19,6 @@ from scipy.spatial import ConvexHull
 # --- User-configurable variables ---
 # These parameters are now constant for this specific analysis.
 time_window = 30  # seconds
-distance_threshold = 300  # meters
 altitude_change_threshold = 73  # meters
 
 # These parameters are not varied in this analysis, but are used in the core logic.
@@ -78,7 +78,8 @@ def time_to_seconds(time_str):
         return None
 
 
-def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_window, distance_threshold, max_gap_seconds):
+def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_window, distance_threshold,
+                                     max_gap_seconds):
     """
     Parses a single IGC file to find thermals (circling) and sustained lift (linear).
     Returns a list of thermal events, sustained lift segments, and flight path coordinates.
@@ -205,8 +206,8 @@ def find_thermals_and_sustained_lift(filepath, altitude_change_threshold, time_w
 
 def main():
     """
-    Main function to analyze the effect of max_gap_seconds.
-    It plots the total number of thermals detected across all files against a range of gap values.
+    Main function to analyze the effect of max_gap_seconds for different distance_thresholds.
+    It plots the total number of thermals detected across all files.
     """
     # --- Input folder to analyze ---
     folder_path = "./igc"
@@ -218,41 +219,40 @@ def main():
         print(f"No IGC files found in the folder: {folder_path}. Please check the path and try again.")
         return
 
-    # --- Analysis: Thermals vs. Max Gap Seconds ---
-    # Define constant values for this analysis
+    # --- Define constant values for this analysis ---
     fixed_time_window = 30
-    fixed_distance_threshold = 300
     fixed_altitude_change = 73
 
-    # Define the range of max_gap_seconds to test
+    # --- Define the ranges to test ---
     gap_seconds_to_test = np.arange(10, 101, 5)  # From 10s to 100s, in steps of 5s
-    total_thermal_counts_gap = []
+    distance_thresholds_to_test = [100, 300, 500]  # Different distance filters
 
-    print("Starting analysis of thermal count vs. max_gap_seconds...")
-    for max_gap in gap_seconds_to_test:
-        total_thermals_for_gap = 0
-        for filename in igc_files:
-            thermals, _, _, _ = find_thermals_and_sustained_lift(
-                filename,
-                fixed_altitude_change,
-                fixed_time_window,
-                fixed_distance_threshold,
-                max_gap
-            )
-            total_thermals_for_gap += len(thermals)
-        total_thermal_counts_gap.append(total_thermals_for_gap)
-        print(f"Max Gap {max_gap}s: Detected {total_thermals_for_gap} thermals")
-
-    # --- Plot the results ---
     plt.figure(figsize=(10, 6))
 
-    # Plot the curve (Thermals vs. Max Gap Seconds)
-    plt.plot(gap_seconds_to_test, total_thermal_counts_gap,
-             marker='o', linestyle='-', color='g',
-             label=f'Time Window={fixed_time_window}s, Distance={fixed_distance_threshold}m')
+    for distance_threshold in distance_thresholds_to_test:
+        total_thermal_counts_for_distance = []
+        print(f"\nStarting analysis for Distance Threshold: {distance_threshold}m...")
+
+        for max_gap in gap_seconds_to_test:
+            total_thermals_for_gap = 0
+            for filename in igc_files:
+                thermals, _, _, _ = find_thermals_and_sustained_lift(
+                    filename,
+                    fixed_altitude_change,
+                    fixed_time_window,
+                    distance_threshold,
+                    max_gap
+                )
+                total_thermals_for_gap += len(thermals)
+            total_thermal_counts_for_distance.append(total_thermals_for_gap)
+
+        # Plot the results for this specific distance_threshold
+        plt.plot(gap_seconds_to_test, total_thermal_counts_for_distance,
+                 marker='o', linestyle='-',
+                 label=f'Distance Threshold: {distance_threshold}m')
 
     # Add labels, title, and legend
-    plt.title('Total Thermals vs. Max Gap Seconds')
+    plt.title('Total Thermals vs. Max Gap Seconds for Different Distance Thresholds')
     plt.xlabel('Max Gap Seconds')
     plt.ylabel('Total Number of Thermals Detected')
     plt.grid(True)
