@@ -220,7 +220,7 @@ def main():
         return
 
     # Define the range of thresholds to test
-    thresholds_to_test = np.arange(5, 501, 5)  # From 5m to 500m, in steps of 5m
+    thresholds_to_test = np.arange(30, 101, 1)  # From 30m to 100m, in steps of 1m
     total_thermal_counts = []
 
     print("Starting analysis of thermal count vs. altitude threshold...")
