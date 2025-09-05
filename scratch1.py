@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import math
+from itertools import combinations
 
 # --- User-configurable variables ---
 # Heuristic parameters for identifying a sustained climb period.
@@ -34,13 +35,12 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
     delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
+    delta_lambda = math.radians(lon2 - lon2)
 
     a = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
     return R * c
-
 
 def get_heading(lat1, lon1, lat2, lon2):
     """
@@ -135,8 +135,31 @@ def is_circling(segment_points, min_circles_threshold):
 
     return total_heading_change >= min_total_heading_change
 
+def calculate_max_distance_from_centroid(segment_points):
+    """
+    Calculates the maximum distance of any point in a segment from the segment's centroid.
+    This is a better measure of the circling radius and accounts for drifting thermals.
+    Returns the maximum distance in meters.
+    """
+    if not segment_points:
+        return 0
 
-def find_thermals_and_sustained_lift(filepath, max_gap_seconds, altitude_change_threshold, min_circles_threshold):
+    lats = [p[0] for p in segment_points]
+    lons = [p[1] for p in segment_points]
+
+    # Calculate the geographic centroid
+    avg_lat = np.mean(lats)
+    avg_lon = np.mean(lons)
+
+    max_dist = 0
+    for lat, lon in segment_points:
+        dist = haversine_distance(lat, lon, avg_lat, avg_lon)
+        if dist > max_dist:
+            max_dist = dist
+    return max_dist
+
+def find_thermals_and_sustained_lift(filepath, max_gap_seconds, altitude_change_threshold, min_circles_threshold,
+                                   circling_distance_threshold):
     """
     Parses a single IGC file to find thermals (circling) and sustained lift (linear).
     Returns a list of circling thermal events and straight-flying thermals.
@@ -197,15 +220,13 @@ def find_thermals_and_sustained_lift(filepath, max_gap_seconds, altitude_change_
                     start_index = current_segment_indices[0]
                     end_index = current_segment_indices[-1]
 
-                    distance_traveled = haversine_distance(
-                        latitudes[start_index], longitudes[start_index],
-                        latitudes[end_index], longitudes[end_index]
-                    )
-
                     segment_points = list(zip(
                         latitudes[start_index:end_index + 1],
                         longitudes[start_index:end_index + 1]
                     ))
+
+                    # NEW: Use the maximum distance from the centroid to check for circling.
+                    max_distance = calculate_max_distance_from_centroid(segment_points)
 
                     segment = {
                         'start_location': (latitudes[start_index], longitudes[start_index]),
@@ -219,7 +240,7 @@ def find_thermals_and_sustained_lift(filepath, max_gap_seconds, altitude_change_
                     }
 
                     if is_circling(segment_points,
-                                   min_circles_threshold) and distance_traveled < circling_distance_threshold:
+                                   min_circles_threshold) and max_distance < circling_distance_threshold:
                         circling_thermals.append(segment)
                     else:
                         straight_thermals.append(segment)
@@ -231,15 +252,13 @@ def find_thermals_and_sustained_lift(filepath, max_gap_seconds, altitude_change_
             start_index = current_segment_indices[0]
             end_index = current_segment_indices[-1]
 
-            distance_traveled = haversine_distance(
-                latitudes[start_index], longitudes[start_index],
-                latitudes[end_index], longitudes[end_index]
-            )
-
             segment_points = list(zip(
                 latitudes[start_index:end_index + 1],
                 longitudes[start_index:end_index + 1]
             ))
+
+            # NEW: Use the maximum distance from the centroid to check for circling.
+            max_distance = calculate_max_distance_from_centroid(segment_points)
 
             segment = {
                 'start_location': (latitudes[start_index], longitudes[start_index]),
@@ -252,7 +271,7 @@ def find_thermals_and_sustained_lift(filepath, max_gap_seconds, altitude_change_
                 if timestamps_seconds[end_index] > timestamps_seconds[start_index] else 0
             }
 
-            if is_circling(segment_points, min_circles_threshold) and distance_traveled < circling_distance_threshold:
+            if is_circling(segment_points, min_circles_threshold) and max_distance < circling_distance_threshold:
                 circling_thermals.append(segment)
             else:
                 straight_thermals.append(segment)
@@ -283,33 +302,34 @@ def main():
         return
 
     # User variables from the global scope
-    global time_window, max_gap_seconds, min_circles_threshold, circling_distance_threshold
+    global time_window, altitude_change_threshold, max_gap_seconds, min_circles_threshold
 
     # Lists to store the data for plotting
-    altitude_thresholds = []
+    circling_thresholds = []
     thermal_counts = []
 
-    # Loop through the specified range for altitude_change_threshold
-    for alt_thresh in range(10, 101, 10):
-        altitude_change_threshold = alt_thresh
+    # Loop through the specified range for circling_distance_threshold
+    for circling_dist in range(100, 5001, 100):
+        circling_distance_threshold = circling_dist
         total_circling_thermals_for_thresh = 0
 
         print(
-            f"--- Analyzing with altitude_change_threshold = {altitude_change_threshold}m and max_gap_seconds = {max_gap_seconds}s ---")
+            f"--- Analyzing with circling_distance_threshold = {circling_distance_threshold}m and max_gap_seconds = {max_gap_seconds}s ---")
 
         for filename in igc_files:
             circling_thermals, _, _, _ = find_thermals_and_sustained_lift(
-                filename, max_gap_seconds, altitude_change_threshold, min_circles_threshold)
+                filename, max_gap_seconds, altitude_change_threshold, min_circles_threshold,
+                circling_distance_threshold)
             total_circling_thermals_for_thresh += len(circling_thermals)
 
-        altitude_thresholds.append(altitude_change_threshold)
+        circling_thresholds.append(circling_distance_threshold)
         thermal_counts.append(total_circling_thermals_for_thresh)
 
     # --- Plot the results ---
     plt.figure(figsize=(10, 6))
-    plt.plot(altitude_thresholds, thermal_counts, marker='o', linestyle='-', color='b')
-    plt.title('Thermal Count vs. Altitude Change Threshold')
-    plt.xlabel('Altitude Change Threshold (meters)')
+    plt.plot(circling_thresholds, thermal_counts, marker='o', linestyle='-', color='b')
+    plt.title('Thermal Count vs. Circling Distance Threshold')
+    plt.xlabel('Circling Distance Threshold (meters)')
     plt.ylabel('Total Circling Thermals Found')
     plt.grid(True)
 
@@ -317,9 +337,9 @@ def main():
     text_str = (
         f"Parameters:\n"
         f"time_window: {time_window}s\n"
+        f"altitude_change_threshold: {altitude_change_threshold}m\n"
         f"max_gap_seconds: {max_gap_seconds}s\n"
         f"min_circles_threshold: {min_circles_threshold} circles\n"
-        f"circling_distance_threshold: {circling_distance_threshold}m\n"
     )
     plt.figtext(0.1, 0.01, text_str, fontsize=9, ha='left', va='bottom',
                 bbox=dict(facecolor='lightgray', alpha=0.5, edgecolor='none'))
