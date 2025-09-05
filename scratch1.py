@@ -4,12 +4,23 @@ import os
 import math
 
 # --- User-configurable variables ---
+# Heuristic parameters for identifying a sustained climb period.
+time_window = 30  # seconds to check for sustained climb
+altitude_change_threshold = 20  # meters
+# New parameter to merge lift segments separated by short gaps.
 max_gap_seconds = 20  # seconds, maximum time gap to consider two segments part of the same thermal
-altitude_change_threshold = 50  # meters, minimum altitude gain in a time window to be considered lift
-time_window = 10  # seconds, the time window for checking altitude change
-max_merge_distance_km = 20  # kilometers, maximum distance to merge closely spaced thermals
-min_circles_threshold = 3  # The minimum number of full 360-degree circles to qualify as a thermal
-circling_distance_threshold = 300  # meters, max displacement in the time window for a circling thermal
+# New parameter to filter out large distances that skew the distribution.
+max_thermal_distance_km = 20  # kilometers, maximum distance to consider between thermals
+# New parameter to group closely spaced thermals into a single event for distance calculation.
+max_merge_distance_km = 2  # kilometers, maximum distance to consider two thermals as a single event
+# NEW: Filter out distances based on time. Prevents linking thermals separated by long breaks.
+max_gliding_time_min = 5  # minutes, max time gap between thermals to consider for distance calculation
+# NEW: Threshold for the circling check.
+min_total_heading_change = 300  # degrees, the minimum total change in heading to qualify as a circle
+# A new distance threshold to distinguish between tight circling thermals and linear sustained lift.
+circling_distance_threshold = 300  # meters, max distance traveled in the time window for a circling thermal
+# NEW: User-configurable variable to define the minimum number of circles required for a thermal.
+min_circles_threshold = 3  # minimum number of circles to register a thermal
 
 
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -85,32 +96,47 @@ def time_to_seconds(time_str):
 
 def is_circling(segment_points, min_circles_threshold):
     """
-    Checks if a segment of flight data shows evidence of circling by summing the absolute
-    heading changes. This is more robust than checking for consistent turns.
+    Checks if a segment of flight data shows evidence of circling based on minimum circles threshold.
     """
     if len(segment_points) < 3:
         return False
 
+    min_total_heading_change = min_circles_threshold * 360
+
     total_heading_change = 0
 
-    # Track the last heading to calculate change.
-    last_heading = get_heading(segment_points[0][0], segment_points[0][1],
-                               segment_points[1][0], segment_points[1][1])
+    # Calculate initial turn direction.
+    lat_p1, lon_p1 = segment_points[0][0], segment_points[0][1]
+    lat_p2, lon_p2 = segment_points[1][0], segment_points[1][1]
+    lat_p3, lon_p3 = segment_points[2][0], segment_points[2][1]
+
+    heading_1 = get_heading(lat_p1, lon_p1, lat_p2, lon_p2)
+    heading_2 = get_heading(lat_p2, lon_p2, lat_p3, lon_p3)
+    initial_delta_heading = (heading_2 - heading_1 + 180) % 360 - 180
+    turn_direction = 1 if initial_delta_heading >= 0 else -1
+    total_heading_change += abs(initial_delta_heading)
 
     # Now, check the rest of the segment.
-    for i in range(2, len(segment_points)):
+    for i in range(2, len(segment_points) - 1):
+        lat_a, lon_a = segment_points[i - 2][0], segment_points[i - 2][1]
         lat_b, lon_b = segment_points[i - 1][0], segment_points[i - 1][1]
         lat_c, lon_c = segment_points[i][0], segment_points[i][1]
 
-        current_heading = get_heading(lat_b, lon_b, lat_c, lon_c)
-        delta_heading = (current_heading - last_heading + 180) % 360 - 180
+        heading_ab = get_heading(lat_a, lon_a, lat_b, lon_b)
+        heading_bc = get_heading(lat_b, lon_b, lat_c, lon_c)
+
+        delta_heading = (heading_bc - heading_ab + 180) % 360 - 180
+
+        # Check for a consistent turn direction.
+        if turn_direction * delta_heading < 0 and abs(delta_heading) > 10:  # Allow for small wobbles
+            return False
+
         total_heading_change += abs(delta_heading)
-        last_heading = current_heading
 
-    return (total_heading_change / 360) >= min_circles_threshold
+    return total_heading_change >= min_total_heading_change
 
 
-def find_thermals_and_sustained_lift(filepath, circling_distance_threshold, min_circles_threshold):
+def find_thermals_and_sustained_lift(filepath, max_gap_seconds, altitude_change_threshold, min_circles_threshold):
     """
     Parses a single IGC file to find thermals (circling) and sustained lift (linear).
     Returns a list of circling thermal events and straight-flying thermals.
@@ -141,135 +167,114 @@ def find_thermals_and_sustained_lift(filepath, circling_distance_threshold, min_
                         continue
 
         if not latitudes:
-            print(f"Warning: No valid GPS points found in {filepath}. Skipping.")
-            return [], []
+            # print(f"Warning: No valid GPS points found in {filepath}. Skipping.")
+            return [], [], 0, []
+
+        sustained_lift_points_indices = []
+        for i in range(time_window, len(altitudes)):
+            altitude_diff = altitudes[i] - altitudes[i - time_window]
+            if altitude_diff > altitude_change_threshold:
+                sustained_lift_points_indices.append(i)
 
         circling_thermals = []
         straight_thermals = []
 
-        thermal_start_index = None
+        if not sustained_lift_points_indices:
+            flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
+            flight_path = list(zip(latitudes, longitudes))
+            return [], [], flight_duration, flight_path
 
-        for i in range(time_window, len(altitudes)):
-            altitude_diff = altitudes[i] - altitudes[i - time_window]
+        current_segment_indices = [sustained_lift_points_indices[0]]
+        for i in range(1, len(sustained_lift_points_indices)):
+            current_point_index = sustained_lift_points_indices[i]
+            previous_point_index = sustained_lift_points_indices[i - 1]
+            time_gap = timestamps_seconds[current_point_index] - timestamps_seconds[previous_point_index]
 
-            # Check for a new thermal segment
-            if altitude_diff > altitude_change_threshold:
-                if thermal_start_index is None:
-                    thermal_start_index = i - time_window
+            if time_gap <= max_gap_seconds:
+                current_segment_indices.append(current_point_index)
             else:
-                # End of a thermal segment
-                if thermal_start_index is not None:
-                    end_index = i
+                if len(current_segment_indices) > 1:
+                    start_index = current_segment_indices[0]
+                    end_index = current_segment_indices[-1]
+
+                    distance_traveled = haversine_distance(
+                        latitudes[start_index], longitudes[start_index],
+                        latitudes[end_index], longitudes[end_index]
+                    )
+
                     segment_points = list(zip(
-                        latitudes[thermal_start_index:end_index + 1],
-                        longitudes[thermal_start_index:end_index + 1]
+                        latitudes[start_index:end_index + 1],
+                        longitudes[start_index:end_index + 1]
                     ))
 
                     segment = {
-                        'start_location': (latitudes[thermal_start_index], longitudes[thermal_start_index]),
+                        'start_location': (latitudes[start_index], longitudes[start_index]),
                         'end_location': (latitudes[end_index], longitudes[end_index]),
-                        'start_timestamp': timestamps_seconds[thermal_start_index],
+                        'start_timestamp': timestamps_seconds[start_index],
                         'end_timestamp': timestamps_seconds[end_index],
-                        'altitude_gain': altitudes[end_index] - altitudes[thermal_start_index],
-                        'climb_rate': (altitudes[end_index] - altitudes[thermal_start_index]) / (
-                                timestamps_seconds[end_index] - timestamps_seconds[thermal_start_index])
+                        'altitude_gain': altitudes[end_index] - altitudes[start_index],
+                        'climb_rate': (altitudes[end_index] - altitudes[start_index]) / (
+                                timestamps_seconds[end_index] - timestamps_seconds[start_index])
+                        if timestamps_seconds[end_index] > timestamps_seconds[start_index] else 0
                     }
 
-                    lateral_displacement = haversine_distance(
-                        segment['start_location'][0], segment['start_location'][1],
-                        segment['end_location'][0], segment['end_location'][1]
-                    )
-
                     if is_circling(segment_points,
-                                   min_circles_threshold) and lateral_displacement < circling_distance_threshold:
+                                   min_circles_threshold) and distance_traveled < circling_distance_threshold:
                         circling_thermals.append(segment)
                     else:
                         straight_thermals.append(segment)
 
-                    thermal_start_index = None
+                current_segment_indices = [current_point_index]
 
-        # Process the last segment if it hasn't been closed
-        if thermal_start_index is not None:
-            end_index = len(altitudes) - 1
-            if end_index > thermal_start_index:
-                segment_points = list(zip(
-                    latitudes[thermal_start_index:end_index + 1],
-                    longitudes[thermal_start_index:end_index + 1]
-                ))
-                segment = {
-                    'start_location': (latitudes[thermal_start_index], longitudes[thermal_start_index]),
-                    'end_location': (latitudes[end_index], longitudes[end_index]),
-                    'start_timestamp': timestamps_seconds[thermal_start_index],
-                    'end_timestamp': timestamps_seconds[end_index],
-                    'altitude_gain': altitudes[end_index] - altitudes[thermal_start_index],
-                    'climb_rate': (altitudes[end_index] - altitudes[thermal_start_index]) / (
-                            timestamps_seconds[end_index] - timestamps_seconds[thermal_start_index])
-                }
+        # Process the last segment
+        if len(current_segment_indices) > 1:
+            start_index = current_segment_indices[0]
+            end_index = current_segment_indices[-1]
 
-                lateral_displacement = haversine_distance(
-                    segment['start_location'][0], segment['start_location'][1],
-                    segment['end_location'][0], segment['end_location'][1]
-                )
+            distance_traveled = haversine_distance(
+                latitudes[start_index], longitudes[start_index],
+                latitudes[end_index], longitudes[end_index]
+            )
 
-                if is_circling(segment_points,
-                               min_circles_threshold) and lateral_displacement < circling_distance_threshold:
-                    circling_thermals.append(segment)
-                else:
-                    straight_thermals.append(segment)
+            segment_points = list(zip(
+                latitudes[start_index:end_index + 1],
+                longitudes[start_index:end_index + 1]
+            ))
 
-        return circling_thermals, straight_thermals
+            segment = {
+                'start_location': (latitudes[start_index], longitudes[start_index]),
+                'end_location': (latitudes[end_index], longitudes[end_index]),
+                'start_timestamp': timestamps_seconds[start_index],
+                'end_timestamp': timestamps_seconds[end_index],
+                'altitude_gain': altitudes[end_index] - altitudes[start_index],
+                'climb_rate': (altitudes[end_index] - altitudes[start_index]) / (
+                        timestamps_seconds[end_index] - timestamps_seconds[start_index])
+                if timestamps_seconds[end_index] > timestamps_seconds[start_index] else 0
+            }
+
+            if is_circling(segment_points, min_circles_threshold) and distance_traveled < circling_distance_threshold:
+                circling_thermals.append(segment)
+            else:
+                straight_thermals.append(segment)
+
+        flight_duration = timestamps_seconds[-1] - timestamps_seconds[0] if len(timestamps_seconds) > 1 else 0
+        flight_path = list(zip(latitudes, longitudes))
+
+        return circling_thermals, straight_thermals, flight_duration, flight_path
     except FileNotFoundError:
         print(f"Error: The file at '{filepath}' was not found.")
-        return [], []
+        return [], [], 0, []
     except Exception as e:
         print(f"An unexpected error occurred while processing {filepath}: {e}")
-        return [], []
-
-
-def merge_thermals(thermals, max_merge_distance_km):
-    """
-    Merges closely spaced thermals into single events based on a maximum distance threshold.
-    """
-    if not thermals:
-        return []
-
-    merged_events = []
-    current_event = thermals[0]
-
-    for i in range(1, len(thermals)):
-        next_thermal = thermals[i]
-        distance_between_thermals = haversine_distance(
-            current_event['end_location'][0], current_event['end_location'][1],
-            next_thermal['start_location'][0], next_thermal['start_location'][1]
-        ) / 1000  # Convert to km
-
-        if distance_between_thermals <= max_merge_distance_km:
-            # Merge the next thermal into the current event
-            current_event['end_location'] = next_thermal['end_location']
-            current_event['end_timestamp'] = next_thermal['end_timestamp']
-            current_event['altitude_gain'] += next_thermal['altitude_gain']
-        else:
-            # Start a new event
-            merged_events.append(current_event)
-            current_event = next_thermal
-
-    # Add the last event
-    merged_events.append(current_event)
-    return merged_events
+        return [], [], 0, []
 
 
 def main():
     """
-    Main function to analyze the effect of a circling_distance_threshold on thermal count.
-    It plots the total number of circling thermals detected across all files
-    against a range of circling distances.
+    Main function to analyze multiple IGC files and plot thermal distributions.
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    folder_path = os.path.join(script_dir, "igc")
-
-    if not os.path.isdir(folder_path):
-        print(f"Error: The folder '{folder_path}' was not found.")
-        return
+    # --- Input folder to analyze ---
+    folder_path = "./igc"
 
     igc_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.lower().endswith('.igc')]
 
@@ -277,40 +282,48 @@ def main():
         print(f"No IGC files found in the folder: {folder_path}. Please check the path and try again.")
         return
 
-    circling_distances_to_test = np.arange(100, 501, 50)
-    total_circling_thermal_counts = []
+    # User variables from the global scope
+    global time_window, max_gap_seconds, min_circles_threshold, circling_distance_threshold
 
-    print(f"Starting analysis of circling thermal count vs. lateral displacement threshold...")
-    print(
-        f"Parameters: min_circles_threshold={min_circles_threshold} circles, altitude_change_threshold={altitude_change_threshold}m, time_window={time_window}s, max_merge_distance_km={max_merge_distance_km}km")
+    # Lists to store the data for plotting
+    altitude_thresholds = []
+    thermal_counts = []
 
-    for circling_distance in circling_distances_to_test:
-        total_thermals_for_distance = 0
-        for filename in igc_files:
-            circling_thermals, _ = find_thermals_and_sustained_lift(
-                filename,
-                circling_distance_threshold=circling_distance,
-                min_circles_threshold=min_circles_threshold
-            )
-            merged_thermals = merge_thermals(circling_thermals, max_merge_distance_km=max_merge_distance_km)
-            total_thermals_for_distance += len(merged_thermals)
-            print(f"  - Processed {os.path.basename(filename)}: Found {len(merged_thermals)} thermals.")
+    # Loop through the specified range for altitude_change_threshold
+    for alt_thresh in range(10, 101, 10):
+        altitude_change_threshold = alt_thresh
+        total_circling_thermals_for_thresh = 0
 
-        total_circling_thermal_counts.append(total_thermals_for_distance)
         print(
-            f"\nCircling Distance Threshold {circling_distance}m: Detected a total of {total_thermals_for_distance} circling thermals")
+            f"--- Analyzing with altitude_change_threshold = {altitude_change_threshold}m and max_gap_seconds = {max_gap_seconds}s ---")
 
-    # Plot the results
+        for filename in igc_files:
+            circling_thermals, _, _, _ = find_thermals_and_sustained_lift(
+                filename, max_gap_seconds, altitude_change_threshold, min_circles_threshold)
+            total_circling_thermals_for_thresh += len(circling_thermals)
+
+        altitude_thresholds.append(altitude_change_threshold)
+        thermal_counts.append(total_circling_thermals_for_thresh)
+
+    # --- Plot the results ---
     plt.figure(figsize=(10, 6))
-    plt.plot(circling_distances_to_test, total_circling_thermal_counts, marker='o', linestyle='-', color='b')
-    plt.title(
-        f'Total Circling Thermals Detected vs. Lateral Displacement Threshold (min_circles_threshold = {min_circles_threshold})')
-    plt.xlabel('Lateral Displacement Threshold (meters)')
-    plt.ylabel('Total Number of Merged Thermal Events Detected')
+    plt.plot(altitude_thresholds, thermal_counts, marker='o', linestyle='-', color='b')
+    plt.title('Thermal Count vs. Altitude Change Threshold')
+    plt.xlabel('Altitude Change Threshold (meters)')
+    plt.ylabel('Total Circling Thermals Found')
     plt.grid(True)
 
-    plt.savefig('thermal_analysis.png')
-    print("\nAnalysis complete. The plot has been saved as 'thermal_analysis.png'.")
+    # Add the variable values to the foot of the plot
+    text_str = (
+        f"Parameters:\n"
+        f"time_window: {time_window}s\n"
+        f"max_gap_seconds: {max_gap_seconds}s\n"
+        f"min_circles_threshold: {min_circles_threshold} circles\n"
+        f"circling_distance_threshold: {circling_distance_threshold}m\n"
+    )
+    plt.figtext(0.1, 0.01, text_str, fontsize=9, ha='left', va='bottom',
+                bbox=dict(facecolor='lightgray', alpha=0.5, edgecolor='none'))
+
     plt.show()
 
 
