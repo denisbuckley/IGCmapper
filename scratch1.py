@@ -278,6 +278,7 @@ def main():
     circling_distances_to_test = np.arange(100, 10001, 100)
     total_circling_thermal_counts = []
 
+
     print(f"Starting analysis of circling thermal count vs. lateral displacement threshold...")
     print(
         f"Parameters: altitude_change_threshold={altitude_change_threshold}m, time_window={time_window}s, max_merge_distance_km={max_merge_distance_km}km")
